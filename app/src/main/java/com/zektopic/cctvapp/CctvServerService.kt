@@ -72,6 +72,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     @Volatile private var videoWidth = 640
     @Volatile private var videoHeight = 480
     @Volatile private var videoCodec = "H264"
+    /** Clockwise rotation applied to the encoded stream (0, 90, 180 or 270). */
+    @Volatile private var cameraRotation = 0
     /**
      * The codec actually negotiated with the encoder, which differs from [videoCodec] when
      * the requested one could not be prepared. Surfaced in /status so the dashboard can
@@ -232,6 +234,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         videoCodec = AppPreferences.getVideoCodec(this)
         videoWidth = AppPreferences.getVideoWidth(this)
         videoHeight = AppPreferences.getVideoHeight(this)
+        cameraRotation = AppPreferences.getCameraRotation(this)
         encoderImplementation = AppPreferences.getEncoderImplementation(this)
         adaptiveQualityEnabled = AppPreferences.getAdaptiveQualityEnabled(this)
         loadCaptureProfile()
@@ -350,6 +353,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             getCurrentResolution = { 
                 if (videoWidth == 0 && videoHeight == 0) "0x0" else "${videoWidth}x${videoHeight}"
             },
+            getCameraRotation = { cameraRotation },
             getAuthEnabled = { authEnabled },
             // Read straight from preferences rather than the cached fields. The service
             // caches these at onCreate, but MainActivity seeds the generated password
@@ -365,6 +369,15 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             // toggle snap back to its old value.
             onSettingUpdate = { key, value ->
                 when (key) {
+                    "camera_rotation" -> {
+                        val requested = value.toIntOrNull() ?: 0
+                        AppPreferences.setCameraRotation(this, requested)
+                        val sanitized = AppPreferences.getCameraRotation(this)
+                        if (cameraRotation != sanitized) {
+                            cameraRotation = sanitized
+                            onMain { restartStreamIfRunning() }
+                        }
+                    }
                     "show_timestamp" -> {
                         showTimestamp = value.toBoolean()
                         AppPreferences.setShowTimestamp(this, showTimestamp)
@@ -918,6 +931,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         val newShowPreview = intent?.getBooleanExtra("show_preview", AppPreferences.getShowPreview(this)) ?: false
         val newWidth = intent?.getIntExtra("width", AppPreferences.getVideoWidth(this)) ?: 640
         val newHeight = intent?.getIntExtra("height", AppPreferences.getVideoHeight(this)) ?: 480
+        val newCameraRotation = intent?.getIntExtra("camera_rotation", AppPreferences.getCameraRotation(this))
+            ?: AppPreferences.getCameraRotation(this)
         // Read from preferences, not the Intent: the app persists the choice before
         // asking for a restart, and the four-way setting no longer fits a boolean extra.
         val newEncoderImplementation = AppPreferences.getEncoderImplementation(this)
@@ -957,6 +972,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             val encoderChanged = videoCodec != newVideoCodec ||
                 videoWidth != newWidth ||
                 videoHeight != newHeight ||
+                cameraRotation != newCameraRotation ||
                 encoderImplementation != newEncoderImplementation ||
                 bitrateKbps != newBitrateKbps ||
                 videoFps != newVideoFps ||
@@ -991,6 +1007,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         videoCodec = newVideoCodec
         videoWidth = newWidth
         videoHeight = newHeight
+        cameraRotation = newCameraRotation
         encoderImplementation = newEncoderImplementation
         bitrateKbps = newBitrateKbps
         videoFps = newVideoFps
@@ -999,6 +1016,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         // Persist the settings
         AppPreferences.setVideoCodec(this, videoCodec)
         AppPreferences.setResolution(this, videoWidth, videoHeight)
+        AppPreferences.setCameraRotation(this, cameraRotation)
 
         // Update auth settings
         authEnabled = newAuthEnabled
@@ -1143,7 +1161,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                 // one takes the interval explicitly -- that extra argument is the whole
                 // reason for switching overloads, so keep the rotation argument last.
                 if (rtspServerCamera.prepareVideo(
-                        videoWidth, videoHeight, videoFps, bitrate, keyframeIntervalSeconds, 0
+                        videoWidth, videoHeight, videoFps, bitrate, keyframeIntervalSeconds, cameraRotation
                     )
                 ) {
                     rtspServerCamera.startStream()
@@ -1169,7 +1187,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                     )
                     if (rtspServerCamera.prepareVideo(
                             videoWidth, videoHeight, videoFps,
-                            EncoderProfile.kbpsToBps(fallbackKbps), keyframeIntervalSeconds, 0
+                            EncoderProfile.kbpsToBps(fallbackKbps), keyframeIntervalSeconds, cameraRotation
                         )
                     ) {
                          rtspServerCamera.startStream()
