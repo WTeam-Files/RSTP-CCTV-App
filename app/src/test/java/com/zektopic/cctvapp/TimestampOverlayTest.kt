@@ -63,4 +63,33 @@ class TimestampOverlayTest {
         assertEquals(2f, g.posX, 0.001f)
         assertEquals(2f, g.posY, 0.001f)
     }
+
+    @Test
+    fun `portrait keeps the same pixel size as landscape`() {
+        val landscape = TimestampOverlay.geometryFor("Top Left", "Medium", 1280, 720)
+        val portrait = TimestampOverlay.geometryFor("Top Left", "Medium", 720, 1280)
+        assertEquals(landscape.scaleX * 1280, portrait.scaleX * 720, 1f)
+        assertEquals(landscape.scaleY * 720, portrait.scaleY * 1280, 1f)
+    }
+
+    @Test
+    fun `portrait corners stay fully on screen for every size`() {
+        for (size in sizes) {
+            for (position in positions) {
+                val g = TimestampOverlay.geometryFor(position, size, 720, 1280)
+                assertTrue("$position/$size right edge=${g.posX + g.scaleX} overflows",
+                    g.posX + g.scaleX <= 100f + 0.001f)
+                assertTrue("$position/$size bottom edge=${g.posY + g.scaleY} overflows",
+                    g.posY + g.scaleY <= 100f + 0.001f)
+            }
+        }
+    }
+
+    @Test
+    fun `rotation 90 swaps the effective resolution`() {
+        assertEquals(Pair(720, 1280), TimestampOverlay.effectiveResolution(1280, 720, 90))
+        assertEquals(Pair(720, 1280), TimestampOverlay.effectiveResolution(1280, 720, 270))
+        assertEquals(Pair(1280, 720), TimestampOverlay.effectiveResolution(1280, 720, 0))
+        assertEquals(Pair(1280, 720), TimestampOverlay.effectiveResolution(1280, 720, 180))
+    }
 }

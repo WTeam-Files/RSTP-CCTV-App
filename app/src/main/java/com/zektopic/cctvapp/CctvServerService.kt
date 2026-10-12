@@ -1232,7 +1232,9 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             filter.setText(buildTimestampString(), fontSize, Color.WHITE)
 
             // Scale must be set before position.
-            val geometry = TimestampOverlay.geometryFor(timestampPosition, timestampSize)
+            val (streamW, streamH) =
+                TimestampOverlay.effectiveResolution(videoWidth, videoHeight, cameraRotation)
+            val geometry = TimestampOverlay.geometryFor(timestampPosition, timestampSize, streamW, streamH)
             filter.setScale(geometry.scaleX, geometry.scaleY)
             filter.setPosition(geometry.posX, geometry.posY)
 
