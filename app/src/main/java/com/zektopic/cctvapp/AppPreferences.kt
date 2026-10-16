@@ -43,6 +43,23 @@ object AppPreferences {
             .apply()
     }
 
+    // --- Camera rotation ---
+    private const val KEY_CAMERA_ROTATION = "camera_rotation"
+
+    /** Allowed sensor/encoder rotations in degrees. */
+    val CAMERA_ROTATIONS = intArrayOf(0, 90, 180, 270)
+
+    /** Rotation applied to the encoded stream. Defaults to 0 (no rotation). */
+    fun getCameraRotation(context: Context): Int {
+        val stored = prefs(context).getInt(KEY_CAMERA_ROTATION, 0)
+        return if (stored in CAMERA_ROTATIONS) stored else 0
+    }
+
+    fun setCameraRotation(context: Context, degrees: Int) {
+        val value = if (degrees in CAMERA_ROTATIONS) degrees else 0
+        prefs(context).edit().putInt(KEY_CAMERA_ROTATION, value).apply()
+    }
+
     // --- Encoder implementation ---
     private const val KEY_ENCODER_IMPLEMENTATION = "encoder_implementation"
 

@@ -246,6 +246,7 @@ cross-origin `Origin` header are rejected with `403`.
 
 | Key | Type | Meaning |
 |---|---|---|
+| `camera_rotation` | `0` \| `90` \| `180` \| `270` | Clockwise rotation of the encoded stream |
 | `show_timestamp` | bool | Timestamp overlay |
 | `show_date` | bool | Date overlay |
 | `timestamp_position` | `Top Left` \| `Top Right` \| `Bottom Left` \| `Bottom Right` | Overlay corner |

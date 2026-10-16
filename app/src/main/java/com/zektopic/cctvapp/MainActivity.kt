@@ -49,6 +49,8 @@ class MainActivity : AppCompatActivity() {
 
     private val resolutions = arrayOf("640x480", "1280x720", "1920x1080", "Max")
     private val codecs = arrayOf("H264", "H265", "AV1")
+    private val rotations = arrayOf("0°", "90°", "180°", "270°")
+    private val rotationValues = intArrayOf(0, 90, 180, 270)
     private val overlayPositions = arrayOf("Top Left", "Top Right", "Bottom Left", "Bottom Right")
     private val overlaySizes = arrayOf("Small", "Medium", "Large")
 
@@ -358,6 +360,10 @@ class MainActivity : AppCompatActivity() {
             ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, codecs)
         )
 
+        (binding.spinnerRotation as? AutoCompleteTextView)?.setAdapter(
+            ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, rotations)
+        )
+
         (binding.spinnerOverlayPosition as? AutoCompleteTextView)?.setAdapter(
             ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, overlayPositions)
         )
@@ -460,6 +466,11 @@ class MainActivity : AppCompatActivity() {
         (binding.spinnerResolution as? AutoCompleteTextView)?.setText(
             if (savedResolution in resolutions) savedResolution else resolutions.first(), false
         )
+
+        // Load saved rotation
+        val savedRotation = AppPreferences.getCameraRotation(this)
+        val rotationIndex = rotationValues.indexOf(savedRotation).takeIf { it >= 0 } ?: 0
+        (binding.spinnerRotation as? AutoCompleteTextView)?.setText(rotations[rotationIndex], false)
 
         // Load saved toggles
         binding.switchPreview.isChecked = AppPreferences.getShowPreview(this)
@@ -577,6 +588,11 @@ class MainActivity : AppCompatActivity() {
 
         (binding.spinnerCodec as? AutoCompleteTextView)?.setOnItemClickListener { _, _, position, _ ->
             AppPreferences.setVideoCodec(this, codecs[position])
+            restartServer()
+        }
+
+        (binding.spinnerRotation as? AutoCompleteTextView)?.setOnItemClickListener { _, _, position, _ ->
+            AppPreferences.setCameraRotation(this, rotationValues[position])
             restartServer()
         }
 
@@ -765,6 +781,7 @@ class MainActivity : AppCompatActivity() {
             putExtra("show_preview", binding.switchPreview.isChecked)
             putExtra("width", width)
             putExtra("height", height)
+            putExtra("camera_rotation", AppPreferences.getCameraRotation(this@MainActivity))
             putExtra("auth_enabled", binding.switchAuth.isChecked)
             putExtra("auth_username", binding.editUsername.text.toString())
             putExtra("auth_password", binding.editPassword.text.toString())

@@ -21,6 +21,7 @@ class WebServer(
     private val getActiveCodec: () -> String,
     private val onResolutionUpdate: (Int, Int) -> Unit,
     private val getCurrentResolution: () -> String,
+    private val getCameraRotation: () -> Int,
     private val getAuthEnabled: () -> Boolean,
     private val getUsername: () -> String,
     private val getPassword: () -> String,
@@ -257,6 +258,7 @@ class WebServer(
                 "codec":"$codec",
                 "activeCodec":"${getActiveCodec()}",
                 "resolution":"$resolution",
+                "cameraRotation":${getCameraRotation()},
                 "authEnabled":$authEnabled,
                 "username":"${escapeJson(username)}",
                 "rtspUrl":"${escapeJson(rtspUrl)}",
@@ -765,6 +767,17 @@ class WebServer(
                 </div>
             </div>
             <div class="setting-row">
+                <span class="setting-label">Rotation</span>
+                <div class="select-wrap">
+                    <select id="rotationSelect" onchange="setSetting('camera_rotation', this.value)">
+                        <option value="0">0°</option>
+                        <option value="90">90°</option>
+                        <option value="180">180°</option>
+                        <option value="270">270°</option>
+                    </select>
+                </div>
+            </div>
+            <div class="setting-row">
                 <div>
                     <span class="setting-label">Encoder</span>
                     <div class="setting-sublabel" id="encoderSublabel">Auto</div>
@@ -1126,6 +1139,7 @@ class WebServer(
                     // Sync dropdowns
                     document.getElementById('codecSelect').value = data.codec;
                     document.getElementById('resSelect').value = data.resolution;
+                    document.getElementById('rotationSelect').value = data.cameraRotation;
                     
                     // Sync toggles
                     document.getElementById('encoderSelect').value = data.encoderImplementation;

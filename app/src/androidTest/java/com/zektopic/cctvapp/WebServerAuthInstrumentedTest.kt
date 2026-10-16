@@ -58,6 +58,7 @@ class WebServerAuthInstrumentedTest {
             getActiveCodec = { "H264" },
             onResolutionUpdate = { _, _ -> },
             getCurrentResolution = { "640x480" },
+            getCameraRotation = { 0 },
             getAuthEnabled = { false },
             getUsername = { username },
             getPassword = { password },
