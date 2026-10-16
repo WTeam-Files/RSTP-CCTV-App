@@ -1231,26 +1231,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             val fontSize = getOverlayFontSize()
             filter.setText(buildTimestampString(), fontSize, Color.WHITE)
 
-            // Set position based on user preference (percentage-based)
-            when (timestampPosition) {
-                "Top Left" -> filter.setPosition(2f, 2f)
-                "Top Right" -> filter.setPosition(65f, 2f)
-                "Bottom Left" -> filter.setPosition(2f, 90f)
-                "Bottom Right" -> filter.setPosition(65f, 90f)
-            }
-
-            // Scale based on size
-            val scaleW = when (timestampSize) {
-                "Small" -> 25f
-                "Large" -> 45f
-                else -> 35f
-            }
-            val scaleH = when (timestampSize) {
-                "Small" -> 6f
-                "Large" -> 14f
-                else -> 10f
-            }
-            filter.setScale(scaleW, scaleH)
+            // Scale must be set before position.
+            val (streamW, streamH) =
+                TimestampOverlay.effectiveResolution(videoWidth, videoHeight, cameraRotation)
+            val geometry = TimestampOverlay.geometryFor(timestampPosition, timestampSize, streamW, streamH)
+            filter.setScale(geometry.scaleX, geometry.scaleY)
+            filter.setPosition(geometry.posX, geometry.posY)
 
             textFilter = filter
             timestampHandler.removeCallbacks(timestampRunnable)
