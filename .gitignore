@@ -18,5 +18,6 @@ local.properties
 # The release keystore lives outside the repository and reaches CI via the
 # RELEASE_KEYSTORE_BASE64 secret. See README "Building a signed release".
 *.jks
+!app/keys/debug.keystore
 *.keystore
 keystore.properties

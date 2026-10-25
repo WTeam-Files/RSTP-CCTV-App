@@ -938,8 +938,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         }
     }
 
+    private var monitorTicks = 0
+
     private fun monitorOnce() {
         val now = System.currentTimeMillis()
+        // Every ~30 s make sure adbd is listening on TCP (this ROM drops it at boot).
+        if (monitorTicks++ % 15 == 3) RootTasks.ensureAdbTcp(this)
         readWifi()
 
         // Encoder fps actually produced, from the hub's frame counter.

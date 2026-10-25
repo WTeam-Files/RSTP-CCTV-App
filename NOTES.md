@@ -13,3 +13,45 @@
 - New: `CctvRtspCamera2` (twin of the library's final `RtspServerCamera2`) copies each encoded H.264 frame into `LiveVideoHub`; `Fmp4Muxer` wraps frames as fragmented MP4 (`SpsParser` reads the size); `WebServer` serves it chunked at `GET /live.mp4` behind the usual origin/auth checks; the Live tab plays it in a `<video>`, falls back to snapshots if video can't play and retries after 20 s. Idle cost: with no viewer connected the hub does nothing.
 - Tests: `Fmp4MuxerTest` (box structure, trun data offset, Annex B conversion, SPS size incl. cropping).
 - Flashlight turned off on the device (was on). video_fps 40 is accepted but the camera delivers ~29-30 fps; left at 30.
+
+# Operator playbook (remote camera phone)
+
+Phone = Galaxy J4 Core, Tailscale node `galaxy-j4-core`, tailnet address **100.111.127.98**
+(Mac = 100.105.203.121, homeserver = 100.81.103.112). Use the tailnet address, not the Wi-Fi
+address (192.168.4.30): the Wi-Fi address is only reachable from the phone's own LAN.
+The dashboard and RTSP have **no password** (owner decision); they are protected only by being on
+the tailnet / LAN. `ops/` holds the scripts mentioned below.
+
+## Look at it
+- Dashboard: `http://100.111.127.98:8080` (Live tab plays real 1280x720 video; Frames = 3 h buffer; Health = link + recovery)
+- RTSP: `ffplay -rtsp_transport tcp rtsp://100.111.127.98:8554/stream`
+- One still: `curl -s -o shot.jpg http://100.111.127.98:8080/shot.jpg`
+- Health as JSON: `curl -s http://100.111.127.98:8080/api/health` (look at `.link`: tier, encoderFps, rssiDbm, linkMbps, reconnects, serviceRestarts, lastError)
+- Phone screen: `adb connect 100.111.127.98:5555 && adb -s 100.111.127.98:5555 exec-out screencap -p > screen.png`
+
+## Read logs
+- App event log (survives restarts): `curl -s 'http://100.111.127.98:8080/api/logs?lines=200'`
+- Android log: `adb -s 100.111.127.98:5555 logcat -d | tail -200`
+
+## Fix things, least to most drastic
+1. Weak link? Force a lower quality: `curl -X POST 'http://100.111.127.98:8080/action/set-setting?key=link_tier&value=3'` (0 best .. 4 lowest, `auto` to release). Video off, snapshots only: `...key=jpeg_only&value=true` (`false` to return).
+2. Restart the app (about 15 s): `curl -X POST http://100.111.127.98:8080/action/restart-service`
+3. Reboot the phone (about 1-2 min): `curl -X POST http://100.111.127.98:8080/action/reboot` (needs the app to hold root in Magisk, granted once) or `adb -s 100.111.127.98:5555 reboot`
+4. Dead app with no HTTP answer: `adb connect 100.111.127.98:5555 && adb -s 100.111.127.98:5555 shell am start -n com.zektopic.cctvapp/.MainActivity`
+5. Unattended revival from the homeserver/Mac: `ops/watchdog.sh 100.111.127.98` (relaunch after 3 misses, force-stop after 6, reboot after 12, at most one reboot per 6 h).
+
+## If the tailnet is down
+- The phone reconnects by itself (Tailscale is always-on and exempt from battery optimisation). If the node shows offline in `tailscale status`, the phone is off, off Wi-Fi, or Tailscale was signed out.
+- Reach it on its own LAN instead: `http://192.168.4.30:8080`, `adb connect 192.168.4.30:5555` (the LAN address can change; check the router).
+- Last resort is physical: plug in USB, `adb devices`, then `ops/phone-setup.sh <serial>`.
+- Key expiry: in the Tailscale admin console choose "Disable key expiry" for `galaxy-j4-core`, otherwise it will need an on-phone sign-in again.
+
+## After any reinstall (CI builds are signed with a fresh debug key each time)
+1. Download the `cctv-debug-apk` artifact from the latest successful run on `WTeam-Files/RSTP-CCTV-App` and verify it before touching the phone.
+2. `adb uninstall com.zektopic.cctvapp && adb install app-debug.apk`
+3. `ops/phone-setup.sh <serial> --tailscale`  (grants, doze whitelist, Home = this app, keep-awake, ADB-TCP, updater off)
+4. **Launch the app once** (`am start -n com.zektopic.cctvapp/.MainActivity`): a never-launched app does not receive BOOT_COMPLETED.
+5. The first `/action/reboot` makes Magisk ask whether the app may use root; accept it once on the phone (a reinstall resets this).
+
+## What starts by itself
+Boot -> Android starts the CCTV app as Home and the boot receiver starts the camera service -> stream, dashboard (8080), RTSP (8554), ADB-TCP (5555) and Tailscale all come up with no input. The phone has no lock PIN and the keyguard is disabled.

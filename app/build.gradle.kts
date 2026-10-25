@@ -53,6 +53,16 @@ android {
     }
 
     signingConfigs {
+        // Debug builds are signed with a fixed, committed key instead of the random one each
+        // CI runner would otherwise generate. A stable signature lets the phone be updated in
+        // place (`adb install -r`), which keeps its runtime grants, its settings and the
+        // Magisk root grant. This key only signs debug builds and protects nothing.
+        getByName("debug") {
+            storeFile = file("keys/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         if (hasReleaseSigning) {
             create("release") {
                 storeFile = file(releaseStorePath!!)
