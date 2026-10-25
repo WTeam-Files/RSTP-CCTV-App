@@ -1,0 +1,33 @@
+[Unit]
+Description=CCTV phone watchdog (checks the phone over the tailnet and heals it)
+Documentation=file:///usr/local/lib/cctv-watchdog/README
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cctvwd
+Group=cctvwd
+# Defaults live in /etc/default/cctv-watchdog (HOST, thresholds, REBOOT_ENABLED, ...).
+EnvironmentFile=-/etc/default/cctv-watchdog
+Environment=HOME=/var/lib/cctv-watchdog
+StateDirectory=cctv-watchdog
+ExecStart=/usr/local/lib/cctv-watchdog/cctv-watchdog.sh
+Restart=always
+RestartSec=20
+# One line per event, a heartbeat every 10 minutes: keep journald from being flooded if it ever loops.
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=40
+# Hardening: it only needs the network and its own state directory.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/cctv-watchdog
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+# /etc/default/cctv-watchdog -- environment for cctv-watchdog.service. Uncomment to override.
+HOST=100.111.127.98
+#PORT=8080
+#INTERVAL=30
+#MAX_AGE_MS=20000
+#FAIL_RESTART=3
+#FAIL_REBOOT=12
+#MAX_RESTARTS_PER_HOUR=6
+#MAX_REBOOTS_PER_HOUR=1
+#REBOOT_ENABLED=1
+RTSP_PROBE=1
+# The adb fallback needs this machine's adb key authorized on the phone; until then keep it off
+# so the unattended phone never shows an "Allow USB debugging?" prompt.
+ADB_FALLBACK=0
