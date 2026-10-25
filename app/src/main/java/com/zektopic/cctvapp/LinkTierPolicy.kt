@@ -61,6 +61,21 @@ class LinkTierPolicy(
     var tier: Int = 0
         private set
 
+    /** True while an operator has fixed the tier; automatic changes are suspended. */
+    var pinned: Boolean = false
+        private set
+
+    /** Fixes the tier (clamped to the valid range), or hands control back to the policy when null. */
+    fun pin(index: Int?) {
+        if (index == null) {
+            pinned = false
+            reset()
+        } else {
+            pinned = true
+            tier = index.coerceIn(0, TIERS.size - 1)
+        }
+    }
+
     private var severeRun = 0
     private var moderateRun = 0
     private var okRun = 0
@@ -69,6 +84,7 @@ class LinkTierPolicy(
 
     /** Feeds one sample; returns true when the tier changed. */
     fun onSample(nowMs: Long, sample: Sample): Boolean {
+        if (pinned) return false
         when (pressureOf(sample)) {
             Pressure.SEVERE -> { severeRun++; moderateRun = 0; okRun = 0 }
             Pressure.MODERATE -> { moderateRun++; severeRun = 0; okRun = 0 }

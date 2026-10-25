@@ -93,6 +93,22 @@ class ResilienceTest {
     }
 
     @Test
+    fun `pinned tier ignores samples until released`() {
+        val p = LinkTierPolicy(cooldownMs = 0)
+        p.pin(3)
+        assertEquals(3, p.tier)
+        repeat(10) { assertFalse(p.onSample(it * 2_000L, severe)) }
+        assertEquals(3, p.tier)
+        p.pin(99)
+        assertEquals(LinkTierPolicy.TIERS.size - 1, p.tier)
+        p.pin(null)
+        assertEquals(0, p.tier)
+        assertFalse(p.pinned)
+        p.onSample(0, severe); p.onSample(2_000, severe)
+        assertEquals(1, p.tier)
+    }
+
+    @Test
     fun `restart budget allows a few per window then refuses`() {
         val b = RestartBudget(maxRestarts = 3, windowMs = 1_000)
         repeat(3) { assertTrue(b.allow(it.toLong())); b.record(it.toLong()) }

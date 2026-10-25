@@ -542,6 +542,13 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                     // Legacy key. Still accepted because NVR setups and scripts built
                     // against the old dashboard send it, and silently ignoring it would
                     // break them with no error to go on.
+                    // Operator override: "auto", or 0..4 to hold a quality tier regardless of the link.
+                    "link_tier" -> {
+                        val wanted = value.trim().toIntOrNull()
+                        linkPolicy.pin(if (value.trim().equals("auto", true)) null else wanted)
+                        AppLog.w("LinkTier", "Tier ${if (linkPolicy.pinned) "pinned to ${linkPolicy.tier}" else "back to automatic"} by operator")
+                        onMain { applyLinkTier() }
+                    }
                     "jpeg_only" -> {
                         jpegOnly = value.toBoolean()
                         AppPreferences.setJpegOnly(this, jpegOnly)
@@ -991,7 +998,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         val t = linkPolicy.current()
         val encAge = if (liveVideoHub.lastFrameWallMs > 0) now - liveVideoHub.lastFrameWallMs else -1
         val snapAge = if (currentSnapshotAtMs > 0) now - currentSnapshotAtMs else -1
-        return "\"tier\":${t.index},\"tierKbps\":${t.kbps},\"tierFps\":${t.fps}," +
+        return "\"tier\":${t.index},\"tierPinned\":${linkPolicy.pinned},\"tierKbps\":${t.kbps},\"tierFps\":${t.fps}," +
             "\"jpegOnly\":$jpegOnly,\"configuredFps\":$videoFps,\"activeEncoderFps\":$activeEncoderFps," +
             "\"encoderFps\":${"%.1f".format(java.util.Locale.US, encoderFpsMeasured)}," +
             "\"encodedFrameAgeMs\":$encAge,\"snapshotAgeMs\":$snapAge," +
