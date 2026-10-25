@@ -49,8 +49,14 @@ $A shell pm disable-user --user 0 org.lineageos.updater 2>&1 | tail -1
 
 say "ADB over TCP :5555, persistent across reboots (needs root for the property)"
 $A shell "su -c 'setprop persist.adb.tcp.port 5555'" 2>&1 | tail -1
-$A tcpip 5555 2>&1 | tail -1
-$A wait-for-device
+# Only (re)start adbd in TCP mode if it is not already listening on 5555 (0x15B3): restarting a
+# listener that is already up has been seen to leave it dead.
+if $A shell "grep -qi ':15B3' /proc/net/tcp6 /proc/net/tcp" 2>/dev/null; then
+  echo "adbd already listening on 5555"
+else
+  $A tcpip 5555 2>&1 | tail -1
+  $A wait-for-device
+fi
 
 if [ "$WITH_TS" = 1 ]; then
   say "Tailscale: always-on VPN"

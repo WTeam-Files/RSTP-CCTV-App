@@ -308,7 +308,7 @@ object AppPreferences {
      * can turn it off in the app or from the dashboard itself.
      */
     fun getWebAuthEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_WEB_AUTH_ENABLED, true)
+        prefs(context).getBoolean(KEY_WEB_AUTH_ENABLED, false)
 
     fun setWebAuthEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_WEB_AUTH_ENABLED, enabled).apply()

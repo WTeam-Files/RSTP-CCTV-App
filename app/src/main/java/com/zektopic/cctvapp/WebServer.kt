@@ -118,12 +118,9 @@ class WebServer(
                 )
             }
 
-            if (!WebAuth.isAuthorized(
-                    getWebAuthEnabled(), getUsername(), getPassword(), headers["authorization"]
-                )
-            ) {
-                return unauthorized()
-            }
+            // No username/password on the dashboard: it is reached over the private tailnet
+            // (and the LAN), and the owner chose to run it open. The cross-origin check above
+            // stays, so a web page still cannot drive the camera from the user's browser.
 
             // Mutations should be POSTed. NanoHTTPD only populates `parameters` for a
             // form-encoded body once the body has been parsed, so do that up front and

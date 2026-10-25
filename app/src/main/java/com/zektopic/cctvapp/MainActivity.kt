@@ -903,6 +903,10 @@ class MainActivity : AppCompatActivity() {
      * now-authenticated dashboard.
      */
     private fun showGeneratedPasswordIfAny() {
+        // The dashboard has no login any more, so there is nothing to generate or announce, and a
+        // dialog would sit on top of a camera that is meant to run unattended.
+        return
+        @Suppress("UNREACHABLE_CODE")
         val generated = AppPreferences.seedCredentialsIfMissing(this) ?: return
 
         binding.editUsername.setText(AppPreferences.getUsername(this))

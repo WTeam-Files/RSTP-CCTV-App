@@ -127,7 +127,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     @Volatile private var authEnabled = false
     @Volatile private var authUsername = ""
     @Volatile private var authPassword = ""
-    @Volatile private var webAuthEnabled = true
+    @Volatile private var webAuthEnabled = false
     @Volatile private var audioEnabled = false
     @Volatile private var showTimestamp = false
     @Volatile private var showDate = false
