@@ -73,6 +73,8 @@ class WebServer(
     private val getBatteryLevel: () -> Int,
     private val getWifiStrength: () -> Int,
     private val getWebAuthEnabled: () -> Boolean,
+    /** Wall-clock capture time of the frame /shot.jpg serves, or 0 when unknown. */
+    private val getSnapshotCapturedAtMs: () -> Long = { 0L },
     /**
      * Port to bind. Defaults to [PORT]; tests pass [EPHEMERAL_PORT] so they get a free
      * port from the OS instead of colliding with a [CctvServerService] already on 8080.
@@ -146,7 +148,9 @@ class WebServer(
         if (uri == "/shot.jpg") {
             val imageBytes = imageProvider()
             return if (imageBytes != null) {
-                newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(imageBytes), imageBytes.size.toLong())
+                val response = newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(imageBytes), imageBytes.size.toLong())
+                addFrameAgeHeaders(response, getSnapshotCapturedAtMs())
+                response
             } else {
                 newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Camera not ready")
             }
@@ -329,6 +333,7 @@ class WebServer(
                 Response.Status.OK, "image/jpeg", FileInputStream(file), file.length()
             )
             response.addHeader("Cache-Control", "private, max-age=3600")
+            addFrameAgeHeaders(response, ts)
             return response
         }
 
@@ -398,6 +403,15 @@ class WebServer(
             response.addHeader("Referrer-Policy", "no-referrer")
         }
         return response
+    }
+
+    /** Adds X-Frame-Timestamp and X-Frame-Age (ms); nothing is added when the capture time is unknown. */
+    private fun addFrameAgeHeaders(response: Response, capturedMs: Long) {
+        val now = System.currentTimeMillis()
+        val age = SnapshotFrames.ageMs(now, capturedMs)
+        if (age < 0L) return
+        response.addHeader("X-Frame-Timestamp", capturedMs.toString())
+        response.addHeader("X-Frame-Age", age.toString())
     }
 
     private fun jsonResponse(json: String): Response {

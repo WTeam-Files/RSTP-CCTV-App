@@ -180,6 +180,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     }
 
     private val currentSnapshot = AtomicReference<ByteArray>(null)
+    /** Wall-clock time [currentSnapshot] was captured; 0 until the first frame. */
+    @Volatile private var currentSnapshotAtMs = 0L
     private val detectionExecutor = Executors.newSingleThreadExecutor()
     /** Separate from [detectionExecutor]: captioning is slow and must not stall detection. */
     private val captionExecutor = Executors.newSingleThreadExecutor()
@@ -586,7 +588,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             },
             getBatteryLevel = { getBatteryLevel() },
             getWifiStrength = { getWifiStrength() },
-            getWebAuthEnabled = { AppPreferences.getWebAuthEnabled(this) }
+            getWebAuthEnabled = { AppPreferences.getWebAuthEnabled(this) },
+            getSnapshotCapturedAtMs = { currentSnapshotAtMs }
         )
         webServer.start()
         snapshotBuffer = try {
@@ -805,6 +808,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                 bitmap.compress(Bitmap.CompressFormat.JPEG, snapshotJpegQuality, stream)
                 val jpeg = stream.toByteArray()
                 currentSnapshot.set(jpeg)
+                currentSnapshotAtMs = System.currentTimeMillis()
                 bufferSnapshot(jpeg)
                 runDetectionPipelineIfEnabled(jpeg)
             }

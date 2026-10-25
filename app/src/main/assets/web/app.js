@@ -371,7 +371,7 @@
   }
 
   // ---------------------------------------------------------------- live view
-  var live = { paused: false, active: false, running: false, lastOk: 0, stamps: [], lat: 0, fails: 0, rate: 250, url: null, blob: null, timer: 0 };
+  var live = { paused: false, active: false, running: false, lastOk: 0, frameAge: -1, stamps: [], lat: 0, fails: 0, rate: 250, url: null, blob: null, timer: 0 };
 
   var storedRate = store('liveRate');
   if (storedRate) { $('rateSel').value = storedRate; live.rate = Number($('rateSel').value) || 250; }
@@ -383,6 +383,8 @@
     var age = Date.now() - live.lastOk;
     var staleAfter = Math.max(3000, live.rate * 2 + 2000);
     if (live.fails >= 3 || age > 10000 + live.rate) return 'offline';
+    // The phone says how old its newest capture is; a fresh fetch of an old frame is not live.
+    if (live.frameAge > Math.max(15000, live.rate * 3)) return 'stale';
     if (age > staleAfter || live.fails > 0) return 'stale';
     return 'live';
   }
@@ -409,7 +411,9 @@
     }
     if (live.lastOk) {
       $('stageTime').hidden = false;
-      $('stageTime').textContent = 'Received ' + fmtClock(live.lastOk);
+      $('stageTime').textContent = live.frameAge >= 0
+        ? 'Captured ' + fmtClock(live.lastOk - live.frameAge) + ' · ' + fmtDur(live.frameAge) + ' old'
+        : 'Received ' + fmtClock(live.lastOk);
     }
   }
 
@@ -424,6 +428,8 @@
     var t0 = performance.now();
     fetchTimeout('/shot.jpg?t=' + Date.now(), { cache: 'no-store' }, 8000).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
+      var age = Number(r.headers.get('X-Frame-Age'));
+      live.frameAge = r.headers.get('X-Frame-Age') !== null && isFinite(age) ? age : -1;
       return r.blob();
     }).then(function (blob) {
       var t1 = performance.now();

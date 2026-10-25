@@ -142,6 +142,24 @@ class SnapshotFramesTest {
     }
 
     @Test
+    fun `ageMs is the elapsed time since capture`() {
+        assertEquals(0L, SnapshotFrames.ageMs(base, base))
+        assertEquals(1_500L, SnapshotFrames.ageMs(base + 1_500L, base))
+    }
+
+    @Test
+    fun `ageMs reports unknown for a missing capture time`() {
+        assertEquals(-1L, SnapshotFrames.ageMs(base, 0L))
+        assertEquals(-1L, SnapshotFrames.ageMs(base, -1L))
+    }
+
+    @Test
+    fun `ageMs never goes negative under clock skew`() {
+        assertEquals(0L, SnapshotFrames.ageMs(base, base + 5_000L))
+        assertEquals(0L, SnapshotFrames.ageMs(1L, Long.MAX_VALUE))
+    }
+
+    @Test
     fun `framesJson is well formed`() {
         val json = SnapshotFrames.framesJson(
             listOf(SnapshotFrames.Frame(2000L, 5L), SnapshotFrames.Frame(1000L, 6L)),
