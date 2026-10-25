@@ -42,7 +42,9 @@ class LinkTierPolicy(
             Tier(1, 2500, 30),
             Tier(2, 1500, 20),
             Tier(3, 800, 15),
-            Tier(4, 500, 10)
+            // 10 fps is below this camera's lowest supported range (15), so it would be ignored
+            // and the stream would run at ~25 fps; ask for what the camera can actually do.
+            Tier(4, 500, 15)
         )
 
         fun pressureOf(s: Sample): Pressure {

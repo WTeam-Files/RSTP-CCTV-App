@@ -16,6 +16,8 @@ object KioskSettings {
     /** STAY_ON_WHILE_PLUGGED_IN bit mask: AC (1) | USB (2) | wireless (4). */
     private const val STAY_ON_ALL = 7
 
+    private const val VPN_PACKAGE = "com.tailscale.ipn"
+
     fun apply(context: Context): String {
         val resolver = context.contentResolver
         val done = ArrayList<String>()
@@ -31,6 +33,14 @@ object KioskSettings {
         for (key in listOf("screensaver_enabled", "screensaver_activate_on_dock", "screensaver_activate_on_sleep")) {
             attempt(key) {
                 if (Settings.Secure.getInt(resolver, key, 1) != 0) Settings.Secure.putInt(resolver, key, 0)
+            }
+        }
+        // Keep the VPN that provides remote access always-on, if it is installed.
+        attempt("always_on_vpn") {
+            context.packageManager.getPackageInfo(VPN_PACKAGE, 0)
+            if (Settings.Secure.getString(resolver, "always_on_vpn_app") != VPN_PACKAGE) {
+                Settings.Secure.putString(resolver, "always_on_vpn_app", VPN_PACKAGE)
+                Settings.Secure.putInt(resolver, "always_on_vpn_lockdown", 0)
             }
         }
         val summary = "kiosk settings applied=$done skipped=$skipped"

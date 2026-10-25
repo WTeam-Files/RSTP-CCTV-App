@@ -17,10 +17,10 @@ class ResilienceTest {
     private val moderate = Sample(congested20 = true)
 
     @Test
-    fun `tiers run 4000-30 down to 500-10`() {
+    fun `tiers run 4000-30 down to 500-15`() {
         val t = LinkTierPolicy.TIERS
         assertEquals(listOf(4000, 2500, 1500, 800, 500), t.map { it.kbps })
-        assertEquals(listOf(30, 30, 20, 15, 10), t.map { it.fps })
+        assertEquals(listOf(30, 30, 20, 15, 15), t.map { it.fps })
     }
 
     @Test
