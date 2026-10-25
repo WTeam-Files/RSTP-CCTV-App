@@ -17,8 +17,37 @@ object AppPreferences {
     private const val KEY_FORCE_SOFTWARE = "force_software"
     private const val KEY_SHOW_PREVIEW = "show_preview"
 
+    @Volatile private var migrationChecked = false
+
+    /**
+     * One-time move of preferences written by older builds from credential-encrypted to
+     * device-protected storage. Only possible once the user is unlocked, so it is retried
+     * on later calls until it has run.
+     */
+    private fun migrateToDeviceProtected(source: Context, target: Context) {
+        if (migrationChecked) return
+        val unlocked = source.getSystemService(android.os.UserManager::class.java)
+            ?.isUserUnlocked ?: true
+        if (!unlocked) return
+        synchronized(this) {
+            if (migrationChecked) return
+            try {
+                target.moveSharedPreferencesFrom(source, PREFS_NAME)
+            } catch (e: Exception) {
+                // Nothing to move, or already moved.
+            }
+            migrationChecked = true
+        }
+    }
+
     private fun prefs(context: Context): SharedPreferences {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // Device-protected storage is readable before the first unlock, so the service can
+        // read its settings when it is started at boot. Credential-encrypted storage is not.
+        // The trade-off: the stream credentials in these preferences are protected by the
+        // device key rather than the user's PIN.
+        val deviceContext = context.createDeviceProtectedStorageContext()
+        migrateToDeviceProtected(context, deviceContext)
+        return deviceContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     // --- Video Codec ---

@@ -57,6 +57,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         /** How long after the last /shot.jpg we keep treating a viewer as present. */
         private const val VIEWER_IDLE_TIMEOUT_MS = 10_000L
 
+        /** The loop keeps capturing while streaming so the local buffer fills without viewers. */
+        private const val SNAPSHOT_BUFFER_ENABLED = true
+
+        /** No frame for this long after a stream start is treated as a failed camera open. */
+        private const val NO_FRAME_TIMEOUT_MS = 45_000L
+
         /** COCO labels treated as an "animal" event. */
         private val ANIMAL_LABELS = setOf("cat", "dog", "bird", "horse", "sheep", "cow")
     }
@@ -144,7 +150,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     private var sensorManager: SensorManager? = null
     private var lightSensor: Sensor? = null
     private var textFilter: TextObjectFilterRender? = null
-    private lateinit var eventStore: EventStore
+    /**
+     * Created on first use rather than in onCreate: it lives in credential-encrypted storage,
+     * which does not exist before the first unlock, and failing to open it must not stop the
+     * camera from starting. A failed attempt is not cached, so it succeeds after unlock.
+     */
+    private val eventStore: EventStore by lazy { EventStore.forContext(this) }
     private val retentionHandler = Handler(Looper.getMainLooper())
     private val retentionRunnable = object : Runnable {
         override fun run() {
@@ -189,6 +200,61 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     private val lastEventMsByType = mutableMapOf<String, Long>()
     private val snapshotHandler = Handler(Looper.getMainLooper())
 
+    private val startRetryPolicy = StartRetryPolicy()
+    private val retryHandler = Handler(Looper.getMainLooper())
+    @Volatile private var retryPending = false
+    @Volatile private var streamStartedMs = 0L
+    @Volatile private var lastFrameMs = 0L
+
+    private val userUnlockedReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != Intent.ACTION_USER_UNLOCKED) return
+            android.util.Log.d("CctvServerService", "User unlocked; retrying stream start")
+            startRetryPolicy.reset()
+            retryHandler.removeCallbacksAndMessages(null)
+            retryPending = false
+            // Storage that was unavailable while locked is picked up lazily from here on.
+            loadCaptureProfile()
+            restartStreamAfterFailure()
+        }
+    }
+
+    /**
+     * Called when the camera did not come up. Retries with backoff instead of giving up; after
+     * repeated failures it exits the process so the system restarts the service fresh.
+     */
+    private fun handleCameraFailure(reason: String) {
+        retryHandler.post {
+            if (retryPending) return@post
+            val decision = startRetryPolicy.onFailure()
+            android.util.Log.w(
+                "CctvServerService",
+                "Camera start failed ($reason); attempt ${startRetryPolicy.consecutiveFailures}, " +
+                    "retry in ${decision.delayMs} ms, restartProcess=${decision.restartProcess}"
+            )
+            if (decision.restartProcess) {
+                android.os.Process.killProcess(android.os.Process.myPid())
+                return@post
+            }
+            retryPending = true
+            retryHandler.postDelayed({
+                retryPending = false
+                restartStreamAfterFailure()
+            }, decision.delayMs)
+        }
+    }
+
+    private fun restartStreamAfterFailure() {
+        try {
+            if (::rtspServerCamera.isInitialized && rtspServerCamera.isStreaming) {
+                rtspServerCamera.stopStream()
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("CctvServerService", "stopStream during retry failed", e)
+        }
+        startStream()
+    }
+
     /** Rolling 3 h on-disk snapshot buffer; null when no writable directory exists. */
     private var snapshotBuffer: SnapshotBuffer? = null
 
@@ -215,9 +281,19 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             val throttled = qualityPlan.throttleCapture
             // The local snapshot buffer always wants frames, so the loop never idles
             // while the stream is up; at the 5 s default that costs almost nothing.
-            val wanted = streaming && (detectionEnabled || viewerActive || snapshotBuffer != null)
+            val wanted = streaming && (detectionEnabled || viewerActive || SNAPSHOT_BUFFER_ENABLED)
 
             if (wanted) takeSnapshot()
+
+            // The stream flag stays true when the camera never opened, so the absence of
+            // frames is the only reliable sign of a failed start.
+            val now = System.currentTimeMillis()
+            if (streaming && !retryPending &&
+                now - maxOf(lastFrameMs, streamStartedMs) > NO_FRAME_TIMEOUT_MS
+            ) {
+                streamStartedMs = now
+                handleCameraFailure("no frames for ${NO_FRAME_TIMEOUT_MS / 1000}s")
+            }
 
             val interval = when {
                 !wanted -> idleSnapshotIntervalMs
@@ -235,8 +311,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        eventStore = EventStore.forContext(this)
-        eventStore.cleanupExpired()
+        registerReceiver(userUnlockedReceiver, android.content.IntentFilter(Intent.ACTION_USER_UNLOCKED))
+        try {
+            eventStore.cleanupExpired()
+        } catch (e: Exception) {
+            android.util.Log.w("CctvServerService", "Event store not available yet (locked?)", e)
+        }
 
         // Load saved settings as defaults
         videoCodec = AppPreferences.getVideoCodec(this)
@@ -269,7 +349,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         audioEnabled = AppPreferences.getAudioEnabled(this)
         motionDetector.updateSensitivity(AppPreferences.getMotionSensitivity(this))
         liteRtObjectDetector = LiteRtObjectDetector(this)
-        eventCaptioner = EventCaptioner(this)
+        eventCaptioner = try {
+            EventCaptioner(this)
+        } catch (e: Exception) {
+            android.util.Log.w("CctvServerService", "Captioner unavailable", e)
+            null
+        }
 
         // Setup light sensor for night mode
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -589,12 +674,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             getWebAuthEnabled = { AppPreferences.getWebAuthEnabled(this) }
         )
         webServer.start()
-        snapshotBuffer = try {
-            SnapshotBuffer.forContext(this)
-        } catch (e: Exception) {
-            android.util.Log.w("CctvServerService", "Snapshot buffer unavailable", e)
-            null
-        }
+        createSnapshotBuffer()
         snapshotHandler.post(snapshotRunnable)
         retentionHandler.post(retentionRunnable)
         adaptiveHandler.post(adaptiveRunnable)
@@ -781,9 +861,21 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         return ipv4Address ?: "0.0.0.0"
     }
 
+    /** External storage is not available before the first unlock, so this is retried per frame. */
+    private fun createSnapshotBuffer(): SnapshotBuffer? {
+        val unlocked = getSystemService(android.os.UserManager::class.java)?.isUserUnlocked ?: true
+        if (!unlocked) return null
+        return try {
+            SnapshotBuffer.forContext(this).also { snapshotBuffer = it }
+        } catch (e: Exception) {
+            android.util.Log.w("CctvServerService", "Snapshot buffer unavailable", e)
+            null
+        }
+    }
+
     /** Hands the frame to the disk writer; never blocks or throws into the capture loop. */
     private fun bufferSnapshot(jpeg: ByteArray) {
-        val buffer = snapshotBuffer ?: return
+        val buffer = snapshotBuffer ?: createSnapshotBuffer() ?: return
         try {
             snapshotWriteExecutor.execute {
                 try {
@@ -805,6 +897,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                 bitmap.compress(Bitmap.CompressFormat.JPEG, snapshotJpegQuality, stream)
                 val jpeg = stream.toByteArray()
                 currentSnapshot.set(jpeg)
+                lastFrameMs = System.currentTimeMillis()
+                startRetryPolicy.reset()
                 bufferSnapshot(jpeg)
                 runDetectionPipelineIfEnabled(jpeg)
             }
@@ -1103,6 +1197,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
 
     private fun startStream() {
         if (!isSurfaceCreated || !openGlView.holder.surface.isValid) return
+        streamStartedMs = System.currentTimeMillis()
         
         try {
             if (!::rtspServerCamera.isInitialized) {
@@ -1409,6 +1504,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         snapshotHandler.removeCallbacks(snapshotRunnable)
         retentionHandler.removeCallbacks(retentionRunnable)
         timestampHandler.removeCallbacks(timestampRunnable)
+        retryHandler.removeCallbacksAndMessages(null)
+        try {
+            unregisterReceiver(userUnlockedReceiver)
+        } catch (e: IllegalArgumentException) {
+            // Never registered.
+        }
         detectionExecutor.shutdownNow()
         captionExecutor.shutdownNow()
         snapshotWriteExecutor.shutdown()
@@ -1527,6 +1628,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
 
     override fun onConnectionFailed(reason: String) {
         android.util.Log.e("CctvServerService", "Connection failed: $reason")
+        handleCameraFailure("connection failed: $reason")
     }
 
     override fun onNewBitrate(bitrate: Long) {
