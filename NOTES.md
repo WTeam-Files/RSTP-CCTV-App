@@ -5,3 +5,4 @@
 - `BootReceiver`: default-on; after `startForegroundService` it also launches `MainActivity` when SYSTEM_ALERT_WINDOW is granted, because Android 11 denies camera access to a background FGS unless the app is visible.
 - `CaptureProfileTest` updated for the new interval defaults.
 - `ci.yml`: ubuntu-latest + `cctv-debug-apk` artifact.
+- Fix: `CctvServerService.onStartCommand` fell back to hardcoded 640x480/false/true when restarted with a null intent (START_STICKY after a crash or soft reboot) and then persisted those values over the real prefs. All 11 such fallbacks now use the stored preference.

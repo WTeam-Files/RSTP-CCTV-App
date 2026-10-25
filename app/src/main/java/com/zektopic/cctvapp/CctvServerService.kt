@@ -959,24 +959,24 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         }
 
         val newVideoCodec = intent?.getStringExtra("video_codec") ?: AppPreferences.getVideoCodec(this)
-        val newShowPreview = intent?.getBooleanExtra("show_preview", AppPreferences.getShowPreview(this)) ?: false
-        val newWidth = intent?.getIntExtra("width", AppPreferences.getVideoWidth(this)) ?: 640
-        val newHeight = intent?.getIntExtra("height", AppPreferences.getVideoHeight(this)) ?: 480
+        val newShowPreview = intent?.getBooleanExtra("show_preview", AppPreferences.getShowPreview(this)) ?: AppPreferences.getShowPreview(this)
+        val newWidth = intent?.getIntExtra("width", AppPreferences.getVideoWidth(this)) ?: AppPreferences.getVideoWidth(this)
+        val newHeight = intent?.getIntExtra("height", AppPreferences.getVideoHeight(this)) ?: AppPreferences.getVideoHeight(this)
         val newCameraRotation = intent?.getIntExtra("camera_rotation", AppPreferences.getCameraRotation(this))
             ?: AppPreferences.getCameraRotation(this)
         // Read from preferences, not the Intent: the app persists the choice before
         // asking for a restart, and the four-way setting no longer fits a boolean extra.
         val newEncoderImplementation = AppPreferences.getEncoderImplementation(this)
-        val newAuthEnabled = intent?.getBooleanExtra("auth_enabled", AppPreferences.getAuthEnabled(this)) ?: false
+        val newAuthEnabled = intent?.getBooleanExtra("auth_enabled", AppPreferences.getAuthEnabled(this)) ?: AppPreferences.getAuthEnabled(this)
         val newAuthUsername = intent?.getStringExtra("auth_username") ?: AppPreferences.getUsername(this)
         val newAuthPassword = intent?.getStringExtra("auth_password") ?: AppPreferences.getPassword(this)
-        val newShowTimestamp = intent?.getBooleanExtra("show_timestamp", AppPreferences.getShowTimestamp(this)) ?: false
-        val newShowDate = intent?.getBooleanExtra("show_date", AppPreferences.getShowDate(this)) ?: false
+        val newShowTimestamp = intent?.getBooleanExtra("show_timestamp", AppPreferences.getShowTimestamp(this)) ?: AppPreferences.getShowTimestamp(this)
+        val newShowDate = intent?.getBooleanExtra("show_date", AppPreferences.getShowDate(this)) ?: AppPreferences.getShowDate(this)
         val newTimestampPosition = intent?.getStringExtra("timestamp_position") ?: AppPreferences.getTimestampPosition(this)
         val newTimestampSize = intent?.getStringExtra("timestamp_size") ?: AppPreferences.getTimestampSize(this)
-        val newDetectionEnabled = intent?.getBooleanExtra("detection_enabled", AppPreferences.getDetectionEnabled(this)) ?: false
-        val newMotionDetectionEnabled = intent?.getBooleanExtra("motion_detection_enabled", AppPreferences.getMotionDetectionEnabled(this)) ?: true
-        val newObjectDetectionEnabled = intent?.getBooleanExtra("object_detection_enabled", AppPreferences.getObjectDetectionEnabled(this)) ?: true
+        val newDetectionEnabled = intent?.getBooleanExtra("detection_enabled", AppPreferences.getDetectionEnabled(this)) ?: AppPreferences.getDetectionEnabled(this)
+        val newMotionDetectionEnabled = intent?.getBooleanExtra("motion_detection_enabled", AppPreferences.getMotionDetectionEnabled(this)) ?: AppPreferences.getMotionDetectionEnabled(this)
+        val newObjectDetectionEnabled = intent?.getBooleanExtra("object_detection_enabled", AppPreferences.getObjectDetectionEnabled(this)) ?: AppPreferences.getObjectDetectionEnabled(this)
         audioEnabled = intent?.getBooleanExtra("audio_enabled", AppPreferences.getAudioEnabled(this))
             ?: AppPreferences.getAudioEnabled(this)
         AppPreferences.setAudioEnabled(this, audioEnabled)
@@ -1075,8 +1075,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         AppPreferences.setObjectDetectionEnabled(this, objectDetectionEnabled)
 
         // Update flashlight & night mode settings
-        val newFlashlightEnabled = intent?.getBooleanExtra("flashlight_enabled", AppPreferences.getFlashlightEnabled(this)) ?: false
-        val newNightModeEnabled = intent?.getBooleanExtra("night_mode_enabled", AppPreferences.getNightModeEnabled(this)) ?: false
+        val newFlashlightEnabled = intent?.getBooleanExtra("flashlight_enabled", AppPreferences.getFlashlightEnabled(this)) ?: AppPreferences.getFlashlightEnabled(this)
+        val newNightModeEnabled = intent?.getBooleanExtra("night_mode_enabled", AppPreferences.getNightModeEnabled(this)) ?: AppPreferences.getNightModeEnabled(this)
         flashlightEnabled = newFlashlightEnabled
         nightModeEnabled = newNightModeEnabled
         AppPreferences.setFlashlightEnabled(this, flashlightEnabled)
