@@ -30,11 +30,15 @@ object AppPreferences {
     }
 
     // --- Resolution ---
+    /** Appliance defaults for a fresh install: 720p. Stored values always win. */
+    const val DEFAULT_WIDTH = 1280
+    const val DEFAULT_HEIGHT = 720
+
     fun getVideoWidth(context: Context): Int =
-        prefs(context).getInt(KEY_VIDEO_WIDTH, 640)
+        prefs(context).getInt(KEY_VIDEO_WIDTH, DEFAULT_WIDTH)
 
     fun getVideoHeight(context: Context): Int =
-        prefs(context).getInt(KEY_VIDEO_HEIGHT, 480)
+        prefs(context).getInt(KEY_VIDEO_HEIGHT, DEFAULT_HEIGHT)
 
     fun setResolution(context: Context, width: Int, height: Int) {
         prefs(context).edit()
@@ -295,17 +299,17 @@ object AppPreferences {
     private const val KEY_START_ON_BOOT = "start_on_boot"
     private const val KEY_AUTO_START_ON_LAUNCH = "auto_start_on_launch"
 
-    /** Off by default: a camera server should not silently start itself after a reboot. */
+    /** On by default: this app is meant to run as an always-on camera appliance. */
     fun getStartOnBoot(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_START_ON_BOOT, false)
+        prefs(context).getBoolean(KEY_START_ON_BOOT, true)
 
     fun setStartOnBoot(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_START_ON_BOOT, enabled).apply()
     }
 
-    /** Off by default: opening the app should not immediately begin streaming. */
+    /** On by default so launching the app (including from the boot fallback) brings the stream up. */
     fun getAutoStartOnLaunch(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_AUTO_START_ON_LAUNCH, false)
+        prefs(context).getBoolean(KEY_AUTO_START_ON_LAUNCH, true)
 
     fun setAutoStartOnLaunch(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_AUTO_START_ON_LAUNCH, enabled).apply()

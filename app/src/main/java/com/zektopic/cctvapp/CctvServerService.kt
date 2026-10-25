@@ -69,8 +69,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
 
     // These are read and written from both the main thread and NanoHTTPD worker
     // threads, so every one of them has to be @Volatile.
-    @Volatile private var videoWidth = 640
-    @Volatile private var videoHeight = 480
+    @Volatile private var videoWidth = AppPreferences.DEFAULT_WIDTH
+    @Volatile private var videoHeight = AppPreferences.DEFAULT_HEIGHT
     @Volatile private var videoCodec = "H264"
     /** Clockwise rotation applied to the encoded stream (0, 90, 180 or 270). */
     @Volatile private var cameraRotation = 0
@@ -189,6 +189,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     private val lastEventMsByType = mutableMapOf<String, Long>()
     private val snapshotHandler = Handler(Looper.getMainLooper())
 
+    /** Rolling 3 h on-disk snapshot buffer; null when no writable directory exists. */
+    private var snapshotBuffer: SnapshotBuffer? = null
+
+    /** Single thread so writes stay ordered and a slow disk never stalls capture. */
+    private val snapshotWriteExecutor = Executors.newSingleThreadExecutor()
+
     /** When a dashboard client last asked for /shot.jpg, for idle throttling. */
     @Volatile private var lastSnapshotRequestMs = 0L
 
@@ -207,7 +213,9 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             // when something wants frames. This loop is the comment above's "single
             // biggest battery cost", so it is the first thing worth giving up.
             val throttled = qualityPlan.throttleCapture
-            val wanted = streaming && (detectionEnabled || viewerActive)
+            // The local snapshot buffer always wants frames, so the loop never idles
+            // while the stream is up; at the 5 s default that costs almost nothing.
+            val wanted = streaming && (detectionEnabled || viewerActive || snapshotBuffer != null)
 
             if (wanted) takeSnapshot()
 
@@ -581,6 +589,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             getWebAuthEnabled = { AppPreferences.getWebAuthEnabled(this) }
         )
         webServer.start()
+        snapshotBuffer = try {
+            SnapshotBuffer.forContext(this)
+        } catch (e: Exception) {
+            android.util.Log.w("CctvServerService", "Snapshot buffer unavailable", e)
+            null
+        }
         snapshotHandler.post(snapshotRunnable)
         retentionHandler.post(retentionRunnable)
         adaptiveHandler.post(adaptiveRunnable)
@@ -767,6 +781,22 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         return ipv4Address ?: "0.0.0.0"
     }
 
+    /** Hands the frame to the disk writer; never blocks or throws into the capture loop. */
+    private fun bufferSnapshot(jpeg: ByteArray) {
+        val buffer = snapshotBuffer ?: return
+        try {
+            snapshotWriteExecutor.execute {
+                try {
+                    buffer.write(jpeg)
+                } catch (e: Exception) {
+                    android.util.Log.w("CctvServerService", "Snapshot buffer write failed", e)
+                }
+            }
+        } catch (e: Exception) {
+            // Executor already shut down while the service is stopping.
+        }
+    }
+
     private fun takeSnapshot() {
         if (!isSurfaceCreated || !::openGlView.isInitialized || !openGlView.holder.surface.isValid) return
         try {
@@ -775,6 +805,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                 bitmap.compress(Bitmap.CompressFormat.JPEG, snapshotJpegQuality, stream)
                 val jpeg = stream.toByteArray()
                 currentSnapshot.set(jpeg)
+                bufferSnapshot(jpeg)
                 runDetectionPipelineIfEnabled(jpeg)
             }
         } catch (e: Exception) {
@@ -1380,6 +1411,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         timestampHandler.removeCallbacks(timestampRunnable)
         detectionExecutor.shutdownNow()
         captionExecutor.shutdownNow()
+        snapshotWriteExecutor.shutdown()
         eventCaptioner?.close()
         if (::liteRtObjectDetector.isInitialized) liteRtObjectDetector.close()
         sensorManager?.unregisterListener(lightSensorListener)

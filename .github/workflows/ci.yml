@@ -1,4 +1,4 @@
-# trigger CI 2
+# CI
 name: CI
 
 # Runs on every pull request and every push to master.

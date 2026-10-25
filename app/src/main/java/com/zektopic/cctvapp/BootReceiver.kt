@@ -31,8 +31,7 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
-        // Opt-in only. Silently re-arming a camera after every reboot is not a
-        // reasonable default for a device that might have changed hands or location.
+        // On by default (this app is a camera appliance); the user can turn it off.
         if (!AppPreferences.getStartOnBoot(context)) {
             Log.d(TAG, "Start-on-boot disabled; ignoring BOOT_COMPLETED")
             return
@@ -73,12 +72,31 @@ class BootReceiver : BroadcastReceiver() {
                 context.startService(serviceIntent)
             }
             Log.d(TAG, "Camera server started after boot")
+            bringToForegroundIfPossible(context)
         } catch (e: Exception) {
             // Covers ForegroundServiceStartNotAllowedException (API 31+) without
             // referencing a class that does not exist on older platforms, plus the
             // SecurityException some OEM builds throw instead.
             Log.w(TAG, "Could not start server on boot; prompting the user instead", e)
             notifyResumeRequired(context)
+        }
+    }
+
+    /**
+     * Android 11 gives a camera foreground service started from the background no camera
+     * access ("while-in-use" restriction) unless the app is visible. An app that holds
+     * SYSTEM_ALERT_WINDOW may start an activity from the background, so launching the main
+     * activity gives the process a foreground state for the camera to open under.
+     */
+    private fun bringToForegroundIfPossible(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        if (!android.provider.Settings.canDrawOverlays(context)) return
+        try {
+            context.startActivity(
+                Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not bring the app to the foreground after boot", e)
         }
     }
 

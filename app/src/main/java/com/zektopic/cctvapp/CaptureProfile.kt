@@ -25,7 +25,7 @@ object CaptureProfile {
      */
     const val MIN_ACTIVE_INTERVAL_MS = 200
     const val MAX_ACTIVE_INTERVAL_MS = 5_000
-    const val DEFAULT_ACTIVE_INTERVAL_MS = 500
+    const val DEFAULT_ACTIVE_INTERVAL_MS = 5_000
 
     /**
      * Milliseconds between captures when nothing wants frames.
@@ -35,7 +35,7 @@ object CaptureProfile {
      */
     const val MIN_IDLE_INTERVAL_MS = 1_000
     const val MAX_IDLE_INTERVAL_MS = 30_000
-    const val DEFAULT_IDLE_INTERVAL_MS = 3_000
+    const val DEFAULT_IDLE_INTERVAL_MS = 5_000
 
     /**
      * Width frames are decoded down to before analysis.

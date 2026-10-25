@@ -10,8 +10,8 @@ class CaptureProfileTest {
     fun `the defaults are the constants they replace`() {
         // These were private constants in CctvServerService. Changing any of them here
         // silently re-tunes the capture pipeline for every existing install.
-        assertEquals(500, CaptureProfile.DEFAULT_ACTIVE_INTERVAL_MS)
-        assertEquals(3_000, CaptureProfile.DEFAULT_IDLE_INTERVAL_MS)
+        assertEquals(5_000, CaptureProfile.DEFAULT_ACTIVE_INTERVAL_MS)
+        assertEquals(5_000, CaptureProfile.DEFAULT_IDLE_INTERVAL_MS)
         assertEquals(640, CaptureProfile.DEFAULT_ANALYSIS_WIDTH)
         assertEquals(50, CaptureProfile.DEFAULT_JPEG_QUALITY)
     }
