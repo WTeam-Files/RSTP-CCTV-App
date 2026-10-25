@@ -60,7 +60,13 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         private const val SNAPSHOT_BUFFER_ENABLED = true
 
         /** No frame for this long after a stream start is treated as a failed camera open. */
-        private const val NO_FRAME_TIMEOUT_MS = 45_000L
+        private const val NO_FRAME_TIMEOUT_MS = 20_000L
+
+        /** How often the link is sampled and the frame watchdog evaluated. */
+        private const val MONITOR_INTERVAL_MS = 2_000L
+
+        /** After the restart budget is spent, retry this slowly instead of thrashing. */
+        private const val SLOW_RETRY_MS = 5 * 60_000L
 
         /** COCO labels treated as an "animal" event. */
         private val ANIMAL_LABELS = setOf("cat", "dog", "bird", "horse", "sheep", "cow")
@@ -202,6 +208,24 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     private val lastEventMsByType = mutableMapOf<String, Long>()
     private val snapshotHandler = Handler(Looper.getMainLooper())
 
+    // ---- link resilience ----
+    private val linkPolicy = LinkTierPolicy()
+    private val monitorHandler = Handler(Looper.getMainLooper())
+    private val restartBudget = RestartBudget()
+    @Volatile private var jpegOnly = false
+    @Volatile private var activeEncoderFps = 0
+    @Volatile private var configuredBitrateKbps = 0
+    @Volatile private var reconnectCount = 0
+    @Volatile private var tierChanges = 0
+    @Volatile private var linkRssi = 0
+    @Volatile private var linkMbps = 0
+    @Volatile private var rtspCongested = false
+    @Volatile private var rtspClientCount = 0
+    @Volatile private var encoderFpsMeasured = 0.0
+    private var lastFrameCountSample = 0L
+    private var lastFrameCountAtMs = 0L
+    private var lastOverflowSample = 0L
+
     private val startRetryPolicy = StartRetryPolicy()
     private val retryHandler = Handler(Looper.getMainLooper())
     @Volatile private var retryPending = false
@@ -234,22 +258,39 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                 "Camera start failed ($reason); attempt ${startRetryPolicy.consecutiveFailures}, " +
                     "retry in ${decision.delayMs} ms, restartProcess=${decision.restartProcess}"
             )
+            AppLog.w("Watchdog", "Camera failure: $reason (attempt ${startRetryPolicy.consecutiveFailures})")
+            var delay = decision.delayMs
             if (decision.restartProcess) {
-                android.os.Process.killProcess(android.os.Process.myPid())
-                return@post
+                val now = System.currentTimeMillis()
+                restartBudget.load(AppPreferences.getRestartStamps(this))
+                if (restartBudget.allow(now)) {
+                    val total = AppPreferences.recordServiceRestart(this, now, restartBudget.stamps())
+                    AppLog.e("Watchdog", "Restarting the app (restart #$total): $reason")
+                    AppRestarter.restart(this)
+                    return@post
+                }
+                AppLog.e("Watchdog", "Restart budget spent; retrying every ${SLOW_RETRY_MS / 1000}s")
+                delay = SLOW_RETRY_MS
             }
             retryPending = true
             retryHandler.postDelayed({
                 retryPending = false
+                reconnectCount++
                 restartStreamAfterFailure()
-            }, decision.delayMs)
+            }, delay)
         }
     }
 
+    /** Whether the camera should be producing frames right now (encoding or preview-only). */
+    private fun cameraRunning(): Boolean =
+        ::rtspServerCamera.isInitialized && isSurfaceCreated &&
+            (rtspServerCamera.isStreaming || rtspServerCamera.isOnPreview)
+
     private fun restartStreamAfterFailure() {
         try {
-            if (::rtspServerCamera.isInitialized && rtspServerCamera.isStreaming) {
-                rtspServerCamera.stopStream()
+            if (::rtspServerCamera.isInitialized) {
+                if (rtspServerCamera.isStreaming) rtspServerCamera.stopStream()
+                if (rtspServerCamera.isOnPreview) rtspServerCamera.stopPreview()
             }
         } catch (e: Exception) {
             android.util.Log.w("CctvServerService", "stopStream during retry failed", e)
@@ -268,8 +309,9 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
 
     private val snapshotRunnable = object : Runnable {
         override fun run() {
-            val streaming = ::rtspServerCamera.isInitialized &&
-                rtspServerCamera.isStreaming && isSurfaceCreated
+            // Snapshots depend on the camera running, not on the RTSP server being healthy:
+            // a preview-only camera (JPEG mode) or a stream with no viewers still feeds them.
+            val streaming = cameraRunning()
 
             // Capturing + JPEG-encoding twice a second around the clock is the single
             // biggest battery cost in the app, and most of the time nothing consumes the
@@ -287,16 +329,6 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
 
             if (wanted) takeSnapshot()
 
-            // The stream flag stays true when the camera never opened, so the absence of
-            // frames is the only reliable sign of a failed start.
-            val now = System.currentTimeMillis()
-            if (streaming && !retryPending &&
-                now - maxOf(lastFrameMs, streamStartedMs) > NO_FRAME_TIMEOUT_MS
-            ) {
-                streamStartedMs = now
-                handleCameraFailure("no frames for ${NO_FRAME_TIMEOUT_MS / 1000}s")
-            }
-
             val interval = when {
                 !wanted -> idleSnapshotIntervalMs
                 throttled -> idleSnapshotIntervalMs
@@ -312,6 +344,10 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
 
     override fun onCreate() {
         super.onCreate()
+        AppLog.init(this)
+        AppLog.i("CctvServerService", "Service created")
+        jpegOnly = AppPreferences.getJpegOnly(this)
+        KioskSettings.apply(this)
         createNotificationChannel()
         registerReceiver(userUnlockedReceiver, android.content.IntentFilter(Intent.ACTION_USER_UNLOCKED))
         try {
@@ -506,6 +542,12 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                     // Legacy key. Still accepted because NVR setups and scripts built
                     // against the old dashboard send it, and silently ignoring it would
                     // break them with no error to go on.
+                    "jpeg_only" -> {
+                        jpegOnly = value.toBoolean()
+                        AppPreferences.setJpegOnly(this, jpegOnly)
+                        AppLog.i("CctvServerService", "JPEG-only mode set to $jpegOnly")
+                        onMain { applyJpegOnlyMode() }
+                    }
                     "force_software" -> {
                         AppPreferences.setForceSoftware(this, value.toBoolean())
                         encoderImplementation = AppPreferences.getEncoderImplementation(this)
@@ -675,11 +717,19 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             getWifiStrength = { getWifiStrength() },
             getWebAuthEnabled = { AppPreferences.getWebAuthEnabled(this) },
             getSnapshotCapturedAtMs = { currentSnapshotAtMs },
-            openLiveVideo = { liveVideoHub.open() }
+            openLiveVideo = { liveVideoHub.open() },
+            getLinkJson = { linkJson() },
+            getLogs = { n -> AppLog.tail(n) },
+            onRestartService = {
+                AppLog.w("Control", "Service restart requested over HTTP")
+                Thread { Thread.sleep(800); AppRestarter.restart(this) }.start()
+            },
+            onReboot = { requestReboot() }
         )
         webServer.start()
         createSnapshotBuffer()
         snapshotHandler.post(snapshotRunnable)
+        monitorHandler.postDelayed(monitorRunnable, MONITOR_INTERVAL_MS)
         retentionHandler.post(retentionRunnable)
         adaptiveHandler.post(adaptiveRunnable)
     }
@@ -808,6 +858,178 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             EncoderImplementation.SOFTWARE -> CodecUtil.CodecType.SOFTWARE
             EncoderImplementation.CBR_PRIORITY -> CodecUtil.CodecType.CBR_PRIORITY
         }
+
+    /** JPEG-only mode: the camera runs for snapshots with no video encoder and no RTSP stream. */
+    private fun startPreviewOnly() {
+        try {
+            if (rtspServerCamera.isStreaming) rtspServerCamera.stopStream()
+            if (!rtspServerCamera.isOnPreview) {
+                val w = if (videoWidth > 0) videoWidth else 1280
+                val h = if (videoHeight > 0) videoHeight else 720
+                rtspServerCamera.startPreview(rtspServerCamera.cameraFacing, w, h, 10, cameraRotation)
+            }
+            streamStartedMs = System.currentTimeMillis()
+            AppLog.i("CctvServerService", "JPEG-only mode: camera preview running, no video encoder")
+        } catch (e: Exception) {
+            AppLog.e("CctvServerService", "Could not start JPEG-only preview", e)
+        }
+    }
+
+    /** Switches between video and JPEG-only. Main thread only. */
+    private fun applyJpegOnlyMode() {
+        if (!::rtspServerCamera.isInitialized) return
+        try {
+            if (rtspServerCamera.isStreaming) rtspServerCamera.stopStream()
+            if (rtspServerCamera.isOnPreview) rtspServerCamera.stopPreview()
+        } catch (e: Exception) {
+            AppLog.w("CctvServerService", "Mode switch teardown failed", e)
+        }
+        liveVideoHub.closeAllClients()
+        startStream()
+    }
+
+    /** Applies the current link tier to a running stream; a changed fps needs a re-prepare. Main thread only. */
+    private fun applyLinkTier() {
+        if (jpegOnly || !::rtspServerCamera.isInitialized || !rtspServerCamera.isStreaming) return
+        val t = linkPolicy.current()
+        if (minOf(videoFps, t.fps) != activeEncoderFps) {
+            restartStreamIfRunning()
+            return
+        }
+        if (configuredBitrateKbps <= 0) return
+        val base = minOf(configuredBitrateKbps, t.kbps)
+        activeBitrateKbps = base
+        try {
+            rtspServerCamera.setVideoBitrateOnFly(
+                EncoderProfile.kbpsToBps(AdaptiveQuality.scaleBitrateKbps(base, qualityPlan))
+            )
+        } catch (e: Exception) {
+            AppLog.w("CctvServerService", "Could not apply link tier bitrate", e)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun readWifi() {
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            val info = wm.connectionInfo
+            linkRssi = info?.rssi ?: 0
+            linkMbps = info?.linkSpeed ?: 0
+        } catch (e: Exception) {
+            linkRssi = 0; linkMbps = 0
+        }
+    }
+
+    private val monitorRunnable = object : Runnable {
+        override fun run() {
+            try {
+                monitorOnce()
+            } catch (e: Exception) {
+                AppLog.w("Monitor", "monitor tick failed", e)
+            }
+            monitorHandler.postDelayed(this, MONITOR_INTERVAL_MS)
+        }
+    }
+
+    private fun monitorOnce() {
+        val now = System.currentTimeMillis()
+        readWifi()
+
+        // Encoder fps actually produced, from the hub's frame counter.
+        val frames = liveVideoHub.frameCount.get()
+        if (lastFrameCountAtMs != 0L && now > lastFrameCountAtMs) {
+            encoderFpsMeasured = (frames - lastFrameCountSample) * 1000.0 / (now - lastFrameCountAtMs)
+        }
+        lastFrameCountSample = frames
+        lastFrameCountAtMs = now
+
+        // Link tier from sender backpressure plus Wi-Fi quality.
+        var c20 = false
+        var c60 = false
+        try {
+            if (!jpegOnly && ::rtspServerCamera.isInitialized && rtspServerCamera.isStreaming) {
+                val client = rtspServerCamera.getStreamClient()
+                rtspClientCount = client.getNumClients()
+                if (rtspClientCount > 0) {
+                    c20 = client.hasCongestion(20f)
+                    c60 = client.hasCongestion(60f)
+                }
+            } else {
+                rtspClientCount = 0
+            }
+        } catch (e: Exception) {
+            // Sampling is best effort.
+        }
+        rtspCongested = c20
+        val overflow = liveVideoHub.overflowCount.get()
+        val overflowed = overflow > lastOverflowSample
+        lastOverflowSample = overflow
+        if (!jpegOnly && linkPolicy.onSample(
+                now,
+                LinkTierPolicy.Sample(c20, c60, overflowed, linkRssi, linkMbps)
+            )
+        ) {
+            tierChanges++
+            val t = linkPolicy.current()
+            AppLog.i("LinkTier", "Tier ${t.index}: ${t.kbps} kbit/s @ ${t.fps} fps " +
+                "(rssi=$linkRssi dBm, link=$linkMbps Mbit/s, congested=$c20/$c60, viewerOverflow=$overflowed)")
+            applyLinkTier()
+        }
+
+        // Frame watchdog: no encoded frame and no snapshot for too long means the camera pipeline died.
+        val shouldRun = ::rtspServerCamera.isInitialized && isSurfaceCreated
+        val healthy = maxOf(streamStartedMs, lastFrameMs, liveVideoHub.lastFrameWallMs)
+        if (shouldRun && !retryPending && now - healthy > NO_FRAME_TIMEOUT_MS) {
+            streamStartedMs = now
+            handleCameraFailure("no frames for ${(now - healthy) / 1000}s")
+        }
+    }
+
+    /** JSON object body (without braces) describing link state, for /status and /api/health. */
+    private fun linkJson(): String {
+        val now = System.currentTimeMillis()
+        val t = linkPolicy.current()
+        val encAge = if (liveVideoHub.lastFrameWallMs > 0) now - liveVideoHub.lastFrameWallMs else -1
+        val snapAge = if (currentSnapshotAtMs > 0) now - currentSnapshotAtMs else -1
+        return "\"tier\":${t.index},\"tierKbps\":${t.kbps},\"tierFps\":${t.fps}," +
+            "\"jpegOnly\":$jpegOnly,\"configuredFps\":$videoFps,\"activeEncoderFps\":$activeEncoderFps," +
+            "\"encoderFps\":${"%.1f".format(java.util.Locale.US, encoderFpsMeasured)}," +
+            "\"encodedFrameAgeMs\":$encAge,\"snapshotAgeMs\":$snapAge," +
+            "\"rssiDbm\":$linkRssi,\"linkMbps\":$linkMbps," +
+            "\"txBytes\":${android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid())}," +
+            "\"rxBytes\":${android.net.TrafficStats.getUidRxBytes(android.os.Process.myUid())}," +
+            "\"rtspClients\":$rtspClientCount,\"liveViewers\":${liveVideoHub.clientCount}," +
+            "\"congested\":$rtspCongested,\"tierChanges\":$tierChanges," +
+            "\"reconnects\":$reconnectCount,\"serviceRestarts\":${AppPreferences.getServiceRestartCount(this)}," +
+            "\"lastError\":\"${AppLog.lastError().replace("\\", "\\\\").replace("\"", "\\\"")}\""
+    }
+
+    private fun requestReboot(): Boolean {
+        return try {
+            val check = ProcessBuilder("su", "-c", "id").redirectErrorStream(true).start()
+            // Process.waitFor(timeout) needs API 26; poll instead. The first call may wait on
+            // a Magisk grant prompt, so allow a few seconds.
+            var exit = -1
+            val deadline = System.currentTimeMillis() + 8_000
+            while (System.currentTimeMillis() < deadline) {
+                try { exit = check.exitValue(); break } catch (e: IllegalThreadStateException) { Thread.sleep(100) }
+            }
+            if (exit != 0) {
+                check.destroy()
+                AppLog.e("Control", "Reboot refused: su is not available to the app (exit=$exit)")
+                return false
+            }
+            AppLog.w("Control", "Reboot requested over HTTP")
+            Thread {
+                Thread.sleep(1000)
+                try { ProcessBuilder("su", "-c", "reboot").start() } catch (e: Exception) {}
+            }.start()
+            true
+        } catch (e: Exception) {
+            AppLog.e("Control", "Reboot failed", e)
+            false
+        }
+    }
 
     /** Restarts an in-flight stream so a changed encoder setting takes effect. Main thread only. */
     private fun restartStreamIfRunning() {
@@ -1208,6 +1430,15 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             if (!::rtspServerCamera.isInitialized) {
                 rtspServerCamera = CctvRtspCamera2(openGlView, this, 8554, liveVideoHub)
             }
+
+            if (jpegOnly) {
+                startPreviewOnly()
+                return
+            }
+            // Leaving JPEG-only mode: release the preview-only camera before the encoder takes over.
+            if (rtspServerCamera.isOnPreview && !rtspServerCamera.isStreaming) {
+                rtspServerCamera.stopPreview()
+            }
             
             if (!rtspServerCamera.isStreaming) {
                 // Resolve max resolution if needed
@@ -1222,13 +1453,18 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                 // so the arithmetic is unit tested rather than inlined here. Passing
                 // videoCodec in matters: H.265 and AV1 reach the same picture at a
                 // noticeably lower bitrate than H.264.
-                val resolvedKbps = EncoderProfile.resolveBitrateKbps(
+                // The link tier can only lower what the user configured, never raise it.
+                val tierCfg = linkPolicy.current()
+                val encFps = minOf(videoFps, tierCfg.fps)
+                val configuredKbps = EncoderProfile.resolveBitrateKbps(
                     width = videoWidth,
                     height = videoHeight,
-                    fps = videoFps,
+                    fps = encFps,
                     codec = videoCodec,
                     manualKbps = bitrateKbps.takeIf { it != AppPreferences.BITRATE_AUTO }
                 )
+                val resolvedKbps = minOf(configuredKbps, tierCfg.kbps)
+                configuredBitrateKbps = configuredKbps
                 val bitrate = EncoderProfile.kbpsToBps(resolvedKbps)
 
                 // Audio is opt-in. Recording it forces the microphone foreground-service
@@ -1292,10 +1528,11 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                 // one takes the interval explicitly -- that extra argument is the whole
                 // reason for switching overloads, so keep the rotation argument last.
                 if (rtspServerCamera.prepareVideo(
-                        videoWidth, videoHeight, videoFps, bitrate, keyframeIntervalSeconds, cameraRotation
+                        videoWidth, videoHeight, encFps, bitrate, keyframeIntervalSeconds, cameraRotation
                     )
                 ) {
                     rtspServerCamera.startStream()
+                    activeEncoderFps = encFps
                     applyTimestampOverlay()
                     activeCodec = videoCodec
                     activeBitrateKbps = resolvedKbps
@@ -1309,19 +1546,20 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
                     // Recompute for H.264: the requested codec may have been given a
                     // lower bitrate for its better efficiency, and carrying that number
                     // over would leave the fallback stream visibly starved.
-                    val fallbackKbps = EncoderProfile.resolveBitrateKbps(
+                    val fallbackKbps = minOf(EncoderProfile.resolveBitrateKbps(
                         width = videoWidth,
                         height = videoHeight,
-                        fps = videoFps,
+                        fps = encFps,
                         codec = "H264",
                         manualKbps = bitrateKbps.takeIf { it != AppPreferences.BITRATE_AUTO }
-                    )
+                    ), tierCfg.kbps)
                     if (rtspServerCamera.prepareVideo(
-                            videoWidth, videoHeight, videoFps,
+                            videoWidth, videoHeight, encFps,
                             EncoderProfile.kbpsToBps(fallbackKbps), keyframeIntervalSeconds, cameraRotation
                         )
                     ) {
                          rtspServerCamera.startStream()
+                         activeEncoderFps = encFps
                          applyTimestampOverlay()
                          // Record that THIS session fell back, but do NOT overwrite the
                          // user's stored choice. prepareVideo can fail transiently -- a
@@ -1510,6 +1748,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         retentionHandler.removeCallbacks(retentionRunnable)
         timestampHandler.removeCallbacks(timestampRunnable)
         retryHandler.removeCallbacksAndMessages(null)
+        monitorHandler.removeCallbacks(monitorRunnable)
         try {
             unregisterReceiver(userUnlockedReceiver)
         } catch (e: IllegalArgumentException) {
@@ -1632,8 +1871,9 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
     }
 
     override fun onConnectionFailed(reason: String) {
-        android.util.Log.e("CctvServerService", "Connection failed: $reason")
-        handleCameraFailure("connection failed: $reason")
+        // A single RTSP client failing must never tear the server down; camera health is judged
+        // by encoded-frame age in the monitor loop instead.
+        AppLog.w("CctvServerService", "RTSP connection failed: $reason")
     }
 
     override fun onNewBitrate(bitrate: Long) {

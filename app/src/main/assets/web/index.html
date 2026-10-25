@@ -221,6 +221,26 @@
           </div>
         </div>
 
+        <div class="card" id="linkCard">
+          <div class="card-head"><h2>Link and recovery</h2><span class="pill" id="tierPill" data-state="offline"><span class="dot"></span><span id="tierPillText">--</span></span></div>
+          <dl class="kv2">
+            <dt>Video quality tier</dt><dd id="lTier">--</dd>
+            <dt>Encoder rate</dt><dd id="lFps">--</dd>
+            <dt>Wi-Fi</dt><dd id="lWifi">--</dd>
+            <dt>Traffic since app start</dt><dd id="lTraffic">--</dd>
+            <dt>Newest video frame</dt><dd id="lFrameAge">--</dd>
+            <dt>Viewers</dt><dd id="lViewers">--</dd>
+            <dt>Reconnects / app restarts</dt><dd id="lRestarts">--</dd>
+            <dt>Last error</dt><dd id="lError">--</dd>
+          </dl>
+          <div class="toolbar">
+            <label class="inline-field"><input type="checkbox" id="jpegOnlyChk"><span>JPEG-only mode (no video, lowest bandwidth)</span></label>
+            <button class="btn" id="restartBtn" type="button"><span>Restart app</span></button>
+            <button class="btn" id="rebootBtn" type="button"><span>Reboot phone</span></button>
+            <a class="btn" id="logsLink" href="/api/logs?lines=200" target="_blank" rel="noopener"><span>View logs</span></a>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head"><h2>What is archived where</h2></div>
           <ol class="tiers">

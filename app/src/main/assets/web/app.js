@@ -654,7 +654,7 @@
   // ---------------------------------------------------------------- frames
   var frames = { list: [], loaded: false, shown: 60, tlIndex: 0, tlTs: 0, follow: true, playTimer: 0 };
 
-  function frameUrl(ts) { return '/frame?ts=' + num(ts); }
+  function frameUrl(ts, w) { return '/frame?ts=' + num(ts) + (w ? '&w=' + w : ''); }
   function frameItem(f) {
     return { src: frameUrl(f.ts), title: fmtStamp(f.ts), file: 'cctv-' + num(f.ts) + '.jpg', caption: fmtBytes(f.size) + ' · ' + fmtAgo(f.ts) };
   }
@@ -747,7 +747,7 @@
       if (hourKey !== lastHour) { g.appendChild(el('h3', { text: hourKey })); lastHour = hourKey; }
       g.appendChild(el('button', { class: 'thumb', type: 'button', 'aria-label': 'Open frame from ' + fmtStamp(f.ts),
         onclick: function () { lbOpen(shown.map(frameItem), idx); } }, [
-        el('img', { src: frameUrl(f.ts), loading: 'lazy', decoding: 'async', alt: '' }),
+        el('img', { src: frameUrl(f.ts, 160), loading: 'lazy', decoding: 'async', alt: '' }),
         el('span', { text: fmtClock(f.ts) })
       ]));
     });
@@ -893,6 +893,8 @@
     $('hThermal').textContent = THERMAL[d.thermalStatus] || String(d.thermalStatus);
     $('hWifi').textContent = d.wifiStrength >= 0 ? d.wifiStrength + '%' : '--';
 
+    renderLink(h.link);
+
     if (status) {
       $('hVideo').textContent = (status.activeCodec || status.codec) + ' · ' + (status.resolution === '0x0' ? 'max' : status.resolution) + ' · ' + status.videoFps + ' fps';
       $('hDetect').textContent = status.detectionEnabled
@@ -901,6 +903,43 @@
       $('hAuth').textContent = (status.webAuthEnabled ? 'dashboard sign-in on' : 'dashboard open') + ', RTSP ' + (status.authEnabled ? 'protected' : 'open');
     }
   }
+
+  function renderLink(l) {
+    if (!l) return;
+    var tierText = l.jpegOnly ? 'JPEG only' : 'Tier ' + l.tier + ' · ' + l.tierKbps + ' kbit/s · ' + l.tierFps + ' fps';
+    $('lTier').textContent = tierText;
+    setPill('tierPill', l.jpegOnly ? 'paused' : (l.tier === 0 ? 'live' : 'stale'),
+      l.jpegOnly ? 'JPEG only' : (l.tier === 0 ? 'Full quality' : 'Reduced'), 'tierPillText');
+    $('lFps').textContent = l.jpegOnly ? 'no encoder'
+      : l.encoderFps + ' fps measured · ' + l.activeEncoderFps + ' encoding · ' + l.configuredFps + ' configured';
+    $('lWifi').textContent = l.rssiDbm < 0 ? l.rssiDbm + ' dBm · ' + l.linkMbps + ' Mbit/s' : '--';
+    $('lTraffic').textContent = 'sent ' + fmtBytes(l.txBytes) + ' · received ' + fmtBytes(l.rxBytes);
+    $('lFrameAge').textContent = l.jpegOnly
+      ? (l.snapshotAgeMs >= 0 ? 'snapshot ' + fmtDur(l.snapshotAgeMs) + ' old' : '--')
+      : (l.encodedFrameAgeMs >= 0 ? fmtDur(l.encodedFrameAgeMs) + ' old' : '--');
+    $('lViewers').textContent = l.rtspClients + ' RTSP · ' + l.liveViewers + ' browser' + (l.congested ? ' · sender backed up' : '');
+    $('lRestarts').textContent = l.reconnects + ' / ' + l.serviceRestarts + ' (' + l.tierChanges + ' tier changes)';
+    $('lError').textContent = l.lastError || 'none';
+    $('jpegOnlyChk').checked = !!l.jpegOnly;
+  }
+
+  $('jpegOnlyChk').addEventListener('change', function () {
+    var on = this.checked;
+    post('/action/set-setting', { key: 'jpeg_only', value: String(on) }).then(function () {
+      toast(on ? 'JPEG-only mode on' : 'Video mode on');
+      setTimeout(loadHealth, 1500);
+    }, function () { toast('Could not change mode', true); });
+  });
+  $('restartBtn').addEventListener('click', function () {
+    if (!window.confirm('Restart the camera app? The stream drops for about 15 seconds.')) return;
+    post('/action/restart-service').then(function (r) { toast(r.ok ? 'Restarting…' : 'Restart failed', !r.ok); },
+      function () { toast('Restarting…'); });
+  });
+  $('rebootBtn').addEventListener('click', function () {
+    if (!window.confirm('Reboot the phone? It will be offline for about a minute or two.')) return;
+    post('/action/reboot').then(function (r) { return r.text().then(function (t) { toast(r.ok ? 'Rebooting…' : t, !r.ok); }); },
+      function () { toast('Rebooting…'); });
+  });
 
   function loadHealth() {
     return getJson('/api/health').then(renderHealth).catch(function () {

@@ -23,6 +23,11 @@
          if a foreground service uses the microphone without declaring this type. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Not grantable by the user: granted once over adb so the app can keep the screen awake
+         while charging and re-assert that after a boot. Without the grant it is simply skipped. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- API 33+: without this the foreground-service notification is suppressed. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -40,11 +45,19 @@
         android:theme="@style/Theme.RTSPCCTVAPP">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Lets the phone boot into this app: select it as the Home app
+                 (cmd package set-home-activity) and Home always returns here. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 

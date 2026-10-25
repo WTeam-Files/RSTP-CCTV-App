@@ -33,6 +33,10 @@ class BootReceiver : BroadcastReceiver() {
             intent.action != Intent.ACTION_LOCKED_BOOT_COMPLETED
         ) return
 
+        AppLog.init(context)
+        AppLog.i(TAG, "Received ${intent.action}")
+        KioskSettings.apply(context)
+
         // On by default (this app is a camera appliance); the user can turn it off.
         if (!AppPreferences.getStartOnBoot(context)) {
             Log.d(TAG, "Start-on-boot disabled; ignoring BOOT_COMPLETED")
@@ -73,7 +77,7 @@ class BootReceiver : BroadcastReceiver() {
             } else {
                 context.startService(serviceIntent)
             }
-            Log.d(TAG, "Camera server started after boot")
+            AppLog.i(TAG, "Camera server started after ${intent.action}")
             bringToForegroundIfPossible(context)
         } catch (e: Exception) {
             // Covers ForegroundServiceStartNotAllowedException (API 31+) without

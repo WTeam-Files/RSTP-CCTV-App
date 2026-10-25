@@ -88,6 +88,12 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // Camera appliance: never let the screen time out while this app is in front.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        AppLog.init(this)
+        AppLog.i("MainActivity", "onCreate")
+        KioskSettings.apply(this)
+
         setupViews()
         requestPermissionsIfNeeded()
         updateNetworkInfo()

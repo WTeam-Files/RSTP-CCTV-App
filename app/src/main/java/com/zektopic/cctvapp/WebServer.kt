@@ -76,6 +76,10 @@ class WebServer(
     /** Wall-clock capture time of the frame /shot.jpg serves, or 0 when unknown. */
     private val getSnapshotCapturedAtMs: () -> Long = { 0L },
     private val openLiveVideo: () -> java.io.InputStream? = { null },
+    private val getLinkJson: () -> String = { "" },
+    private val getLogs: (Int) -> List<String> = { emptyList() },
+    private val onRestartService: () -> Unit = {},
+    private val onReboot: () -> Boolean = { false },
     /**
      * Port to bind. Defaults to [PORT]; tests pass [EPHEMERAL_PORT] so they get a free
      * port from the OS instead of colliding with a [CctvServerService] already on 8080.
@@ -149,8 +153,23 @@ class WebServer(
         if (uri == "/shot.jpg") {
             val imageBytes = imageProvider()
             return if (imageBytes != null) {
+                val captured = getSnapshotCapturedAtMs()
+                val etag = HttpCache.etag("s", captured)
+                // Unchanged since the client's copy: spend a header, not a JPEG, on a weak link.
+                if (captured > 0 && HttpCache.matches(session.headers["if-none-match"], etag)) {
+                    val notModified = newFixedLengthResponse(Response.Status.NOT_MODIFIED, "image/jpeg", "")
+                    notModified.addHeader("ETag", etag)
+                    notModified.addHeader("Cache-Control", "no-cache")
+                    addFrameAgeHeaders(notModified, captured)
+                    return notModified
+                }
                 val response = newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(imageBytes), imageBytes.size.toLong())
-                addFrameAgeHeaders(response, getSnapshotCapturedAtMs())
+                if (captured > 0) {
+                    response.addHeader("ETag", etag)
+                    response.addHeader("Last-Modified", httpDate(captured))
+                }
+                response.addHeader("Cache-Control", "no-cache")
+                addFrameAgeHeaders(response, captured)
                 response
             } else {
                 newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Camera not ready")
@@ -166,6 +185,30 @@ class WebServer(
             response.addHeader("Cache-Control", "no-store")
             response.addHeader("X-Accel-Buffering", "no")
             return response
+        }
+
+        // Remote recovery. POST only, and behind the same origin and auth gate as everything else.
+        if (uri == "/action/restart-service" || uri == "/action/reboot") {
+            if (session.method != Method.POST) {
+                return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, MIME_PLAINTEXT, "POST required")
+            }
+            return if (uri == "/action/restart-service") {
+                onRestartService()
+                newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Restarting the app")
+            } else if (onReboot()) {
+                newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Rebooting the phone")
+            } else {
+                newFixedLengthResponse(
+                    Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT,
+                    "Reboot unavailable: grant root (su) to this app in Magisk"
+                )
+            }
+        }
+
+        if (uri == "/api/logs") {
+            val n = (session.parameters["lines"]?.firstOrNull()?.toIntOrNull() ?: 200).coerceIn(1, 1500)
+            val text = getLogs(n).joinToString("\n") + "\n"
+            return gzipIfAccepted(session, "text/plain; charset=utf-8", text.toByteArray(Charsets.UTF_8))
         }
 
         if (uri == "/action/switch-camera") {
@@ -224,9 +267,7 @@ class WebServer(
         if (uri == "/events") {
             val since = session.parameters["since"]?.firstOrNull()?.toLongOrNull()
             val limit = session.parameters["limit"]?.firstOrNull()?.toIntOrNull() ?: 100
-            return newFixedLengthResponse(
-                Response.Status.OK, "application/json", listEventsJson(since, limit)
-            )
+            return jsonResponse(session, listEventsJson(since, limit))
         }
 
         if (uri.startsWith("/events/")) {
@@ -320,9 +361,11 @@ class WebServer(
                 "batteryLevel":${getBatteryLevel()},
                 "wifiStrength":${getWifiStrength()},
                 "webAuthEnabled":${getWebAuthEnabled()},
-                "audioEnabled":${AppPreferences.getAudioEnabled(context)}
+                "audioEnabled":${AppPreferences.getAudioEnabled(context)},
+                "jpegOnly":${getLinkJson().contains("\"jpegOnly\":true")},
+                "link":{${getLinkJson()}}
             }""".trimIndent()
-            return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+            return jsonResponse(session, json)
         }
 
         // Read-only snapshot buffer endpoints. They sit behind the same origin and
@@ -332,7 +375,7 @@ class WebServer(
             val before = session.parameters["before"]?.firstOrNull()?.toLongOrNull()
             val frames = SnapshotFrames(SnapshotBuffer.directoryFor(context))
             val json = SnapshotFrames.framesJson(frames.list(limit, before), frames.stats())
-            return jsonResponse(json)
+            return jsonResponse(session, json)
         }
 
         if (uri == "/frame") {
@@ -341,16 +384,31 @@ class WebServer(
             if (file == null) {
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Frame not found")
             }
-            val response = newFixedLengthResponse(
-                Response.Status.OK, "image/jpeg", FileInputStream(file), file.length()
-            )
-            response.addHeader("Cache-Control", "private, max-age=3600")
+            // A buffered frame never changes, so it can be cached for good; a thumbnail is a
+            // few KB where the full frame is tens, which is what keeps the gallery usable on a weak link.
+            val w = HttpCache.thumbWidth(session.parameters["w"]?.firstOrNull())
+            val etag = HttpCache.etag("f", ts, w ?: 0)
+            if (HttpCache.matches(session.headers["if-none-match"], etag)) {
+                val notModified = newFixedLengthResponse(Response.Status.NOT_MODIFIED, "image/jpeg", "")
+                notModified.addHeader("ETag", etag)
+                notModified.addHeader("Cache-Control", "private, max-age=31536000, immutable")
+                return notModified
+            }
+            val response = if (w != null) {
+                val thumb = Thumbnails.get("$ts-$w", file, w)
+                    ?: return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Thumbnail failed")
+                newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(thumb), thumb.size.toLong())
+            } else {
+                newFixedLengthResponse(Response.Status.OK, "image/jpeg", FileInputStream(file), file.length())
+            }
+            response.addHeader("ETag", etag)
+            response.addHeader("Cache-Control", "private, max-age=31536000, immutable")
             addFrameAgeHeaders(response, ts)
             return response
         }
 
         if (uri == "/api/health") {
-            return jsonResponse(buildHealthJson())
+            return jsonResponse(session, buildHealthJson())
         }
 
         if (uri == "/" || uri == "/index.html" || uri == "/greet.html") {
@@ -426,11 +484,25 @@ class WebServer(
         response.addHeader("X-Frame-Age", age.toString())
     }
 
-    private fun jsonResponse(json: String): Response {
-        val response = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+    /** JSON, gzipped when the client accepts it and the body is big enough to benefit. */
+    private fun jsonResponse(session: IHTTPSession, json: String): Response =
+        gzipIfAccepted(session, "application/json", json.toByteArray(Charsets.UTF_8))
+
+    private fun gzipIfAccepted(session: IHTTPSession, mime: String, body: ByteArray): Response {
+        val useGzip = body.size > 300 && HttpCache.acceptsGzip(session.headers["accept-encoding"])
+        val bytes = if (useGzip) HttpCache.gzip(body) else body
+        val response = newFixedLengthResponse(
+            Response.Status.OK, mime, ByteArrayInputStream(bytes), bytes.size.toLong()
+        )
+        if (useGzip) response.addHeader("Content-Encoding", "gzip")
+        response.addHeader("Vary", "Accept-Encoding")
         response.addHeader("Cache-Control", "no-store")
         return response
     }
+
+    private fun httpDate(ms: Long): String =
+        java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.US)
+            .apply { timeZone = java.util.TimeZone.getTimeZone("GMT") }.format(java.util.Date(ms))
 
     /** An int extra from the sticky battery broadcast, or -1; reading it needs no receiver. */
     private fun batteryExtra(name: String): Int {
@@ -471,7 +543,8 @@ class WebServer(
                 "\"charging\":" + plugged + "," +
                 "\"wifiStrength\":" + getWifiStrength() + "," +
                 "\"thermalStatus\":" + getThermalStatus() +
-            "}" +
+            "}," +
+            "\"link\":{" + getLinkJson() + "}" +
             "}"
     }
 }

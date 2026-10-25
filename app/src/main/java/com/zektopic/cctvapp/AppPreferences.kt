@@ -58,6 +58,33 @@ object AppPreferences {
         prefs(context).edit().putString(KEY_VIDEO_CODEC, codec).apply()
     }
 
+    // --- Resilience bookkeeping ---
+    private const val KEY_JPEG_ONLY = "jpeg_only_mode"
+    private const val KEY_SERVICE_RESTARTS = "service_restart_count"
+    private const val KEY_RESTART_STAMPS = "restart_stamps"
+
+    /** Snapshots only, no video encoder: the explicit low-bandwidth fallback. */
+    fun getJpegOnly(context: Context): Boolean = prefs(context).getBoolean(KEY_JPEG_ONLY, false)
+
+    fun setJpegOnly(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_JPEG_ONLY, enabled).apply()
+    }
+
+    fun getServiceRestartCount(context: Context): Int = prefs(context).getInt(KEY_SERVICE_RESTARTS, 0)
+
+    /** Records a self-restart; returns the new total. Written synchronously: the process is about to die. */
+    fun recordServiceRestart(context: Context, nowMs: Long, keep: List<Long>): Int {
+        val total = getServiceRestartCount(context) + 1
+        prefs(context).edit()
+            .putInt(KEY_SERVICE_RESTARTS, total)
+            .putString(KEY_RESTART_STAMPS, (keep + nowMs).joinToString(","))
+            .commit()
+        return total
+    }
+
+    fun getRestartStamps(context: Context): List<Long> =
+        (prefs(context).getString(KEY_RESTART_STAMPS, "") ?: "").split(',').mapNotNull { it.toLongOrNull() }
+
     // --- Resolution ---
     /** Appliance defaults for a fresh install: 720p. Stored values always win. */
     const val DEFAULT_WIDTH = 1280

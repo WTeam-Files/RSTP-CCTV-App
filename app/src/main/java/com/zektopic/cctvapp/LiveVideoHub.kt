@@ -2,6 +2,7 @@ package com.zektopic.cctvapp
 
 import java.io.InputStream
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -31,6 +32,16 @@ class LiveVideoHub {
 
     val clientCount: Int get() = clients.size
 
+    /** Wall-clock time of the newest encoder frame, whether or not anyone is watching. */
+    @Volatile var lastFrameWallMs: Long = 0L
+        private set
+
+    /** Encoded frames seen since process start; the service diffs it to measure encoder fps. */
+    val frameCount = AtomicLong()
+
+    /** Browser clients dropped for not keeping up; a sign the link is saturated. */
+    val overflowCount = AtomicLong()
+
     /** SPS/PPS as raw NAL units; a changed SPS means a new init segment, so clients restart. */
     fun onParameterSets(newSps: ByteArray, newPps: ByteArray) {
         val s = Fmp4Muxer.stripStartCode(newSps)
@@ -45,6 +56,8 @@ class LiveVideoHub {
 
     /** One encoder output buffer in Annex B form. Copies what it needs before returning. */
     fun onFrame(annexB: ByteArray, ptsUs: Long) {
+        frameCount.incrementAndGet()
+        lastFrameWallMs = System.currentTimeMillis()
         if (clients.isEmpty() && sps != null) return
         val sample = Fmp4Muxer.toSample(annexB) { type, nal ->
             // Some encoders only emit parameter sets in-band with the IDR frame.
@@ -80,7 +93,10 @@ class LiveVideoHub {
             if (closed) return
             if (waitingForKey && !frame.keyframe) return
             waitingForKey = false
-            if (!queue.offer(frame)) close()
+            if (!queue.offer(frame)) {
+                overflowCount.incrementAndGet()
+                close()
+            }
         }
 
         override fun read(): Int {
