@@ -371,7 +371,7 @@ class WebServer(
             val limit = SnapshotFrames.clampLimit(session.parameters["limit"]?.firstOrNull()?.toIntOrNull())
             val before = session.parameters["before"]?.firstOrNull()?.toLongOrNull()
             val frames = SnapshotFrames(SnapshotBuffer.directoryFor(context))
-            val json = SnapshotFrames.framesJson(frames.list(limit, before), frames.stats())
+            val json = SnapshotFrames.framesJson(frames.list(limit, before), cachedStats(frames))
             return jsonResponse(session, json)
         }
 
@@ -507,9 +507,24 @@ class WebServer(
         return intent?.getIntExtra(name, -1) ?: -1
     }
 
+    @Volatile private var statsCache: SnapshotFrames.Stats? = null
+    @Volatile private var statsCachedAtMs = 0L
+
+    /**
+     * Buffer statistics, at most ten seconds old. Computing them stats every buffered file, which
+     * took 3-4 s on this phone's flash with a full 3 h buffer, and /api/health is polled by the
+     * dashboard and by the watchdog.
+     */
+    private fun cachedStats(frames: SnapshotFrames): SnapshotFrames.Stats {
+        val now = System.currentTimeMillis()
+        val cached = statsCache
+        if (cached != null && now - statsCachedAtMs < 10_000L) return cached
+        return frames.stats().also { statsCache = it; statsCachedAtMs = now }
+    }
+
     private fun buildHealthJson(): String {
         val frames = SnapshotFrames(SnapshotBuffer.directoryFor(context))
-        val stats = frames.stats()
+        val stats = cachedStats(frames)
         val dir = SnapshotBuffer.directoryFor(context)
         val coverage = SnapshotFrames.coveragePercent(
             stats.oldestMs, stats.newestMs, SnapshotBuffer.DEFAULT_RETENTION_MS
