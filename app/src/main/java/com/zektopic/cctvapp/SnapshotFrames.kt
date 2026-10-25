@@ -81,6 +81,17 @@ class SnapshotFrames(
             return sb.toString()
         }
 
+        /**
+         * Milliseconds between [capturedMs] and [nowMs], or -1 when the capture time is
+         * unknown (zero or negative). A capture time ahead of the clock -- skew or a clock
+         * step -- reports 0 rather than a negative age.
+         */
+        fun ageMs(nowMs: Long, capturedMs: Long): Long {
+            if (capturedMs <= 0L) return -1L
+            val age = nowMs - capturedMs
+            return if (age < 0L) 0L else age
+        }
+
         /** Share of the retention window the buffer currently covers, 0..100. */
         fun coveragePercent(oldestMs: Long, newestMs: Long, retentionMs: Long): Int {
             if (retentionMs <= 0L || newestMs <= 0L || oldestMs <= 0L || newestMs < oldestMs) return 0
