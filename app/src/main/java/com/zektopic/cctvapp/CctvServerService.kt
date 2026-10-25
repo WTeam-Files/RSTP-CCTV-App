@@ -35,7 +35,6 @@ import com.pedro.common.VideoCodec
 import com.pedro.encoder.input.gl.render.filters.`object`.TextObjectFilterRender
 import com.pedro.encoder.utils.CodecUtil
 import com.pedro.library.view.OpenGlView
-import com.pedro.rtspserver.RtspServerCamera2
 import java.io.ByteArrayOutputStream
 import java.net.Inet4Address
 import java.text.SimpleDateFormat
@@ -67,7 +66,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         private val ANIMAL_LABELS = setOf("cat", "dog", "bird", "horse", "sheep", "cow")
     }
 
-    private lateinit var rtspServerCamera: RtspServerCamera2
+    private lateinit var rtspServerCamera: CctvRtspCamera2
+    private val liveVideoHub = LiveVideoHub()
     private lateinit var openGlView: OpenGlView
     private lateinit var webServer: WebServer
     private lateinit var windowManager: WindowManager
@@ -674,7 +674,8 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
             getBatteryLevel = { getBatteryLevel() },
             getWifiStrength = { getWifiStrength() },
             getWebAuthEnabled = { AppPreferences.getWebAuthEnabled(this) },
-            getSnapshotCapturedAtMs = { currentSnapshotAtMs }
+            getSnapshotCapturedAtMs = { currentSnapshotAtMs },
+            openLiveVideo = { liveVideoHub.open() }
         )
         webServer.start()
         createSnapshotBuffer()
@@ -1093,7 +1094,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
 
         // Initialize wrapper if needed
         if (!::rtspServerCamera.isInitialized) {
-             rtspServerCamera = RtspServerCamera2(openGlView, this, 8554)
+             rtspServerCamera = CctvRtspCamera2(openGlView, this, 8554, liveVideoHub)
         }
 
         // If already streaming, check if we need to restart due to config change
@@ -1205,7 +1206,7 @@ class CctvServerService : Service(), ConnectChecker, SurfaceHolder.Callback {
         
         try {
             if (!::rtspServerCamera.isInitialized) {
-                rtspServerCamera = RtspServerCamera2(openGlView, this, 8554)
+                rtspServerCamera = CctvRtspCamera2(openGlView, this, 8554, liveVideoHub)
             }
             
             if (!rtspServerCamera.isStreaming) {

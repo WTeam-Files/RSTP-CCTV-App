@@ -371,7 +371,7 @@
   }
 
   // ---------------------------------------------------------------- live view
-  var live = { paused: false, active: false, running: false, lastOk: 0, frameAge: -1, stamps: [], lat: 0, fails: 0, rate: 250, url: null, blob: null, timer: 0 };
+  var live = { video: false, videoTimer: 0, videoSeen: 0, paused: false, active: false, running: false, lastOk: 0, frameAge: -1, stamps: [], lat: 0, fails: 0, rate: 250, url: null, blob: null, timer: 0 };
 
   var storedRate = store('liveRate');
   if (storedRate) { $('rateSel').value = storedRate; live.rate = Number($('rateSel').value) || 250; }
@@ -423,7 +423,7 @@
   }
 
   function liveTick() {
-    if (!live.active || live.paused || document.hidden) { live.running = false; return; }
+    if (!live.active || live.paused || document.hidden || live.video) { live.running = false; return; }
     live.running = true;
     var t0 = performance.now();
     fetchTimeout('/shot.jpg?t=' + Date.now(), { cache: 'no-store' }, 8000).then(function (r) {
@@ -458,11 +458,76 @@
     });
   }
 
+  // Live video: the phone serves its H.264 stream as fragmented MP4 at /live.mp4, which a
+  // <video> element plays at the camera's real frame rate. If it cannot play (old browser,
+  // stream down) the view falls back to polling /shot.jpg and retries the video later.
+  var canVideo = !!(window.MediaSource || document.createElement('video').canPlayType('video/mp4; codecs="avc1.42E01F"'));
+
+  function videoStop() {
+    var v = $('liveVideo');
+    clearTimeout(live.videoTimer);
+    live.video = false;
+    v.pause();
+    v.removeAttribute('src');
+    v.load();           // drops the HTTP connection so the phone stops sending
+    v.hidden = true;
+    $('liveImg').hidden = false;
+  }
+
+  function videoFallback() {
+    if (!live.video && !$('liveVideo').hasAttribute('src')) return;
+    videoStop();
+    live.stamps = [];
+    if (live.active && !live.paused) {
+      liveSchedule(0);
+      live.videoTimer = setTimeout(function () { if (live.active && !live.paused) videoStart(); }, 20000);
+    }
+  }
+
+  function videoFrame(now, meta) {
+    if (!live.video) return;
+    var v = $('liveVideo');
+    live.lastOk = Date.now();
+    live.fails = 0;
+    live.frameAge = 0;
+    live.stamps.push(now);
+    while (live.stamps.length > 2 && now - live.stamps[0] > 3000) live.stamps.shift();
+    if (v.videoWidth) $('hudRes').textContent = v.videoWidth + '×' + v.videoHeight;
+    // Stay near the live edge: a browser that buffers ahead would otherwise drift behind.
+    if (v.buffered.length) {
+      var lag = v.buffered.end(v.buffered.length - 1) - v.currentTime;
+      live.lat = Math.max(0, lag * 1000);
+      if (lag > 1.5) v.currentTime = v.buffered.end(v.buffered.length - 1) - 0.25;
+    }
+    v.requestVideoFrameCallback(videoFrame);
+  }
+
+  function videoStart() {
+    if (!canVideo || live.video || !live.active || live.paused) return;
+    var v = $('liveVideo');
+    if (!v.requestVideoFrameCallback) { return; }
+    clearTimeout(live.videoTimer);
+    v.hidden = false;
+    $('liveImg').hidden = true;
+    v.onplaying = function () {
+      live.video = true;
+      clearTimeout(live.timer); live.running = false;   // stop snapshot polling
+      live.stamps = [];
+      v.requestVideoFrameCallback(videoFrame);
+    };
+    v.onerror = v.onstalled = v.onended = function () { videoFallback(); };
+    v.src = '/live.mp4?t=' + Date.now();
+    var p = v.play();
+    if (p && p.catch) p.catch(function () { videoFallback(); });
+    // No picture within a few seconds: use snapshots meanwhile.
+    live.videoTimer = setTimeout(function () { if (!live.video) videoFallback(); }, 8000);
+  }
+
   function liveStart() {
     live.active = true;
-    if (!live.running && !live.paused) { liveSchedule(0); }
+    if (!live.paused) { videoStart(); if (!live.video && !live.running) liveSchedule(0); }
   }
-  function liveStop() { live.active = false; live.running = false; clearTimeout(live.timer); }
+  function liveStop() { live.active = false; live.running = false; clearTimeout(live.timer); videoStop(); }
 
   setInterval(function () { if (live.active) renderLive(); renderConn(); }, 500);
 
@@ -470,8 +535,8 @@
     live.paused = !live.paused;
     $('pauseText').textContent = live.paused ? 'Resume' : 'Pause';
     $('pauseIcon').firstElementChild.setAttribute('d', live.paused ? 'M8 5v14l11-7z' : 'M6 5h4v14H6V5zm8 0h4v14h-4V5z');
-    if (live.paused) { live.stamps = []; clearTimeout(live.timer); live.running = false; }
-    else { liveSchedule(0); }
+    if (live.paused) { live.stamps = []; clearTimeout(live.timer); live.running = false; videoStop(); }
+    else { videoStart(); if (!live.video) liveSchedule(0); }
     renderLive();
   });
 
@@ -486,6 +551,20 @@
   });
 
   $('saveBtn').addEventListener('click', function () {
+    var v = $('liveVideo');
+    if (live.video && v.videoWidth) {
+      var c = document.createElement('canvas');
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      c.getContext('2d').drawImage(v, 0, 0);
+      c.toBlob(function (b) {
+        if (!b) { toast('Could not save frame', true); return; }
+        var u = URL.createObjectURL(b);
+        var a2 = el('a', { href: u, download: 'cctv-' + Date.now() + '.jpg' });
+        document.body.appendChild(a2); a2.click(); document.body.removeChild(a2);
+        setTimeout(function () { URL.revokeObjectURL(u); }, 5000);
+      }, 'image/jpeg', 0.92);
+      return;
+    }
     if (!live.blob) { toast('No frame to save yet', true); return; }
     var a = el('a', { href: live.url, download: 'cctv-' + Date.now() + '.jpg' });
     document.body.appendChild(a); a.click(); document.body.removeChild(a);

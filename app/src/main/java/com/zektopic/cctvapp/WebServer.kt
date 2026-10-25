@@ -75,6 +75,7 @@ class WebServer(
     private val getWebAuthEnabled: () -> Boolean,
     /** Wall-clock capture time of the frame /shot.jpg serves, or 0 when unknown. */
     private val getSnapshotCapturedAtMs: () -> Long = { 0L },
+    private val openLiveVideo: () -> java.io.InputStream? = { null },
     /**
      * Port to bind. Defaults to [PORT]; tests pass [EPHEMERAL_PORT] so they get a free
      * port from the OS instead of colliding with a [CctvServerService] already on 8080.
@@ -154,6 +155,17 @@ class WebServer(
             } else {
                 newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Camera not ready")
             }
+        }
+
+        // Live H.264 as fragmented MP4, played by a <video> element. Behind the same
+        // origin and auth checks as everything else in serve().
+        if (uri == "/live.mp4") {
+            val stream = openLiveVideo()
+                ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Live video not available")
+            val response = newChunkedResponse(Response.Status.OK, "video/mp4", stream)
+            response.addHeader("Cache-Control", "no-store")
+            response.addHeader("X-Accel-Buffering", "no")
+            return response
         }
 
         if (uri == "/action/switch-camera") {

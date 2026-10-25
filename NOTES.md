@@ -7,3 +7,9 @@
 - `ci.yml`: ubuntu-latest + `cctv-debug-apk` artifact.
 - Fix: `CctvServerService.onStartCommand` fell back to hardcoded 640x480/false/true when restarted with a null intent (START_STICKY after a crash or soft reboot) and then persisted those values over the real prefs. All 11 such fallbacks now use the stored preference.
 - Direct boot / retry: prefs moved to device-protected storage (one-time migration from credential-encrypted, runs after unlock); `EventStore` is now lazy and the captioner guarded, so a locked boot no longer crashes `onCreate`; `SnapshotBuffer` is created lazily once the user is unlocked; service + `BootReceiver` are `directBootAware` (LOCKED_BOOT_COMPLETED + BOOT_COMPLETED); `StartRetryPolicy` (2/5/10/20/30/60 s backoff, fresh process after 5 consecutive failures) driven by `onConnectionFailed`, a 45 s no-frame watchdog in the snapshot loop, and ACTION_USER_UNLOCKED. Tests: `StartRetryPolicyTest`. Trade-off: stream credentials now sit in device-protected storage.
+
+## Live video in the browser
+- Dashboard live view used to poll /shot.jpg (JPEG from the GL surface: ~2 distinct frames/s at best on this phone, 0.2 fps at the 5 s snapshot interval). RTSP itself delivers ~29 fps.
+- New: `CctvRtspCamera2` (twin of the library's final `RtspServerCamera2`) copies each encoded H.264 frame into `LiveVideoHub`; `Fmp4Muxer` wraps frames as fragmented MP4 (`SpsParser` reads the size); `WebServer` serves it chunked at `GET /live.mp4` behind the usual origin/auth checks; the Live tab plays it in a `<video>`, falls back to snapshots if video can't play and retries after 20 s. Idle cost: with no viewer connected the hub does nothing.
+- Tests: `Fmp4MuxerTest` (box structure, trun data offset, Annex B conversion, SPS size incl. cropping).
+- Flashlight turned off on the device (was on). video_fps 40 is accepted but the camera delivers ~29-30 fps; left at 30.
