@@ -2,6 +2,8 @@ package com.zektopic.cctvapp
 
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -85,7 +87,17 @@ class WebServer(
         /** Bind whatever port the OS hands out. Only used by tests. */
         const val EPHEMERAL_PORT = 0
         private const val REALM = "CCTV Dashboard"
+
+        /**
+         * Scripts and styles are same-origin files only, so injected markup cannot run
+         * inline script or pull in anything from elsewhere.
+         */
+        private const val WEB_CSP = "default-src 'self'; img-src 'self' blob: data:; " +
+            "media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; " +
+            "form-action 'self'"
     }
+
+    private val startedAtMs: Long = System.currentTimeMillis()
 
     override fun serve(session: IHTTPSession): Response {
         return try {
@@ -291,14 +303,51 @@ class WebServer(
                 "objectDetectorReady":${getObjectDetectorReady()},
                 "batteryLevel":${getBatteryLevel()},
                 "wifiStrength":${getWifiStrength()},
-                "webAuthEnabled":${getWebAuthEnabled()}
+                "webAuthEnabled":${getWebAuthEnabled()},
+                "audioEnabled":${AppPreferences.getAudioEnabled(context)}
             }""".trimIndent()
             return newFixedLengthResponse(Response.Status.OK, "application/json", json)
         }
 
-        if (uri == "/" || uri == "/greet.html") {
-            return newFixedLengthResponse(buildDashboardHtml())
-        } 
+        // Read-only snapshot buffer endpoints. They sit behind the same origin and
+        // authorization gate as everything else because they are reached via serve().
+        if (uri == "/api/frames") {
+            val limit = SnapshotFrames.clampLimit(session.parameters["limit"]?.firstOrNull()?.toIntOrNull())
+            val before = session.parameters["before"]?.firstOrNull()?.toLongOrNull()
+            val frames = SnapshotFrames(SnapshotBuffer.directoryFor(context))
+            val json = SnapshotFrames.framesJson(frames.list(limit, before), frames.stats())
+            return jsonResponse(json)
+        }
+
+        if (uri == "/frame") {
+            val ts = session.parameters["ts"]?.firstOrNull()?.toLongOrNull() ?: 0L
+            val file = SnapshotFrames(SnapshotBuffer.directoryFor(context)).fileFor(ts)
+            if (file == null) {
+                return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Frame not found")
+            }
+            val response = newFixedLengthResponse(
+                Response.Status.OK, "image/jpeg", FileInputStream(file), file.length()
+            )
+            response.addHeader("Cache-Control", "private, max-age=3600")
+            return response
+        }
+
+        if (uri == "/api/health") {
+            return jsonResponse(buildHealthJson())
+        }
+
+        if (uri == "/" || uri == "/index.html" || uri == "/greet.html") {
+            return serveAsset("index.html", "text/html; charset=utf-8")
+        }
+        if (uri == "/app.css") {
+            return serveAsset("app.css", "text/css; charset=utf-8")
+        }
+        if (uri == "/app.js") {
+            return serveAsset("app.js", "application/javascript; charset=utf-8")
+        }
+        if (uri == "/favicon.svg") {
+            return serveAsset("favicon.svg", "image/svg+xml")
+        }
         
         // Legacy redirect
         if (uri.startsWith("/server/")) {
@@ -328,986 +377,75 @@ class WebServer(
         }
     }
 
-    private fun buildDashboardHtml(): String {
-        // Everything interpolated below is escaped: the username and password are
-        // settable over the network and end up inside buildRtspUrl().
-        val rtspUrl = WebAuth.escapeHtml(buildRtspUrl())
-        val safeIp = WebAuth.escapeHtml(ipAddress)
-        val authBadgeDisplay = if (getAuthEnabled() && getUsername().isNotEmpty()) "inline" else "none"
-        return """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>CCTV Dashboard — $safeIp</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        
-        :root {
-            --bg: #0f1117;
-            --surface: #1a1d27;
-            --surface-hover: #22263a;
-            --border: rgba(255,255,255,0.06);
-            --text: #e8eaed;
-            --text-secondary: #9aa0b0;
-            --accent: #00b894;
-            --accent-glow: rgba(0,184,148,0.15);
-            --danger: #e74c3c;
-            --warning: #f39c12;
-            --radius: 16px;
-            --radius-sm: 10px;
+    /**
+     * Serves a bundled dashboard file from assets/web. The caller passes a
+     * fixed file name, never the request path, so a request cannot select an arbitrary asset.
+     */
+    private fun serveAsset(assetName: String, mime: String): Response {
+        val bytes = try {
+            context.assets.open("web/" + assetName).use { it.readBytes() }
+        } catch (e: Exception) {
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
         }
-        
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 24px 16px;
-            -webkit-font-smoothing: antialiased;
+        val response = newFixedLengthResponse(
+            Response.Status.OK, mime, ByteArrayInputStream(bytes), bytes.size.toLong()
+        )
+        response.addHeader("Cache-Control", "no-cache")
+        response.addHeader("X-Content-Type-Options", "nosniff")
+        if (assetName == "index.html") {
+            response.addHeader("Content-Security-Policy", WEB_CSP)
+            response.addHeader("X-Frame-Options", "DENY")
+            response.addHeader("Referrer-Policy", "no-referrer")
         }
-        
-        .container { width: 100%; max-width: 520px; }
-        
-        /* Header */
-        .header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 24px;
-        }
-        .header h1 {
-            font-size: 22px;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-            background: linear-gradient(135deg, #00b894, #00cec9);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .status-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            transition: all 0.3s ease;
-        }
-        .status-badge.live {
-            background: var(--accent-glow);
-            color: var(--accent);
-            box-shadow: 0 0 20px rgba(0,184,148,0.1);
-        }
-        .status-badge.offline {
-            background: rgba(231,76,60,0.12);
-            color: var(--danger);
-        }
-        .status-dot {
-            width: 7px; height: 7px;
-            border-radius: 50%;
-            background: currentColor;
-        }
-        .status-badge.live .status-dot {
-            animation: pulse 2s ease-in-out infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(1.3); }
-        }
-        
-        /* Preview Card */
-        .preview-card {
-            background: var(--surface);
-            border-radius: var(--radius);
-            border: 1px solid var(--border);
-            overflow: hidden;
-            margin-bottom: 16px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        }
-        .preview-wrapper {
-            position: relative;
-            width: 100%;
-            aspect-ratio: 4/3;
-            background: #000;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .preview-wrapper img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            display: block;
-            transition: opacity 0.2s;
-        }
-        .preview-overlay {
-            position: absolute;
-            top: 12px;
-            right: 12px;
-            display: flex;
-            gap: 6px;
-        }
-        .chip {
-            padding: 3px 10px;
-            border-radius: 6px;
-            font-size: 11px;
-            font-weight: 600;
-            background: rgba(0,0,0,0.65);
-            backdrop-filter: blur(8px);
-            color: var(--text);
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-        
-        /* Controls Section */
-        .controls {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            padding: 16px;
-        }
-        
-        /* Buttons */
-        .btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 12px 16px;
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            background: var(--surface);
-            color: var(--text);
-            font-family: inherit;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            outline: none;
-        }
-        .btn:hover { background: var(--surface-hover); border-color: rgba(255,255,255,0.1); }
-        .btn:active { transform: scale(0.97); }
-        .btn.primary {
-            background: var(--accent);
-            color: #fff;
-            border-color: transparent;
-        }
-        .btn.primary:hover { background: #00a884; }
-        .btn.danger {
-            background: rgba(231,76,60,0.12);
-            color: var(--danger);
-            border-color: rgba(231,76,60,0.2);
-        }
-        .btn.danger:hover { background: rgba(231,76,60,0.2); }
-        .btn svg { width: 16px; height: 16px; fill: currentColor; }
-        
-        /* Settings Card */
-        .settings-card {
-            background: var(--surface);
-            border-radius: var(--radius);
-            border: 1px solid var(--border);
-            padding: 20px;
-            margin-bottom: 16px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.2);
-        }
-        .settings-card h3 {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 16px;
-        }
-        .setting-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 10px 0;
-        }
-        .setting-row + .setting-row { border-top: 1px solid var(--border); }
-        .advanced-summary {
-            cursor: pointer;
-            font-size: 15px;
-            font-weight: 600;
-            list-style: revert;
-        }
-        .setting-label {
-            font-size: 14px;
-            font-weight: 500;
-        }
-        .setting-sublabel {
-            font-size: 11px;
-            color: var(--text-secondary);
-            margin-top: 2px;
-        }
-        
-        /* Custom Select */
-        .select-wrap {
-            position: relative;
-        }
-        .select-wrap select {
-            appearance: none;
-            -webkit-appearance: none;
-            background: var(--bg);
-            color: var(--text);
-            border: 1px solid var(--border);
-            padding: 8px 32px 8px 12px;
-            border-radius: 8px;
-            font-family: inherit;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-        .select-wrap select:hover { border-color: rgba(255,255,255,0.15); }
-        .select-wrap select:focus { border-color: var(--accent); }
-        .select-wrap::after {
-            content: '▾';
-            position: absolute;
-            right: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text-secondary);
-            pointer-events: none;
-            font-size: 12px;
-        }
-        
-        /* Toggle Switch */
-        .toggle { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
-        .toggle input { opacity: 0; width: 0; height: 0; }
-        .toggle-track {
-            position: absolute; cursor: pointer;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: #2d3143;
-            border-radius: 24px;
-            transition: all 0.3s ease;
-        }
-        .toggle-track::before {
-            content: '';
-            position: absolute;
-            width: 18px; height: 18px;
-            left: 3px; bottom: 3px;
-            background: white;
-            border-radius: 50%;
-            transition: all 0.3s ease;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-        }
-        .toggle input:checked + .toggle-track { background: var(--accent); }
-        .toggle input:checked + .toggle-track::before { transform: translateX(20px); }
-        
-        /* Text Input */
-        .text-input {
-            background: var(--bg);
-            color: var(--text);
-            border: 1px solid var(--border);
-            padding: 8px 12px;
-            border-radius: 8px;
-            font-family: inherit;
-            font-size: 13px;
-            font-weight: 500;
-            outline: none;
-            width: 140px;
-            transition: border-color 0.2s;
-        }
-        .text-input:hover { border-color: rgba(255,255,255,0.15); }
-        .text-input:focus { border-color: var(--accent); }
-        .text-input::placeholder { color: var(--text-secondary); }
+        return response
+    }
 
-        /* Info Card */
-        .info-card {
-            background: var(--surface);
-            border-radius: var(--radius);
-            border: 1px solid var(--border);
-            padding: 20px;
-            margin-bottom: 16px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.2);
-        }
-        .info-card h3 {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 16px;
-        }
-        .url-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 10px 0;
-        }
-        .url-row + .url-row { border-top: 1px solid var(--border); }
-        .url-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
-        .url-value {
-            font-family: 'JetBrains Mono', 'SF Mono', monospace;
-            font-size: 13px;
-            color: var(--accent);
-            word-break: break-all;
-        }
-        .copy-btn {
-            background: none;
-            border: 1px solid var(--border);
-            color: var(--text-secondary);
-            border-radius: 6px;
-            padding: 6px 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-            flex-shrink: 0;
-            margin-left: 12px;
-        }
-        .copy-btn:hover { background: var(--surface-hover); color: var(--text); }
-        .copy-btn svg { width: 14px; height: 14px; fill: currentColor; display: block; }
-        
-        /* Toast */
-        .toast {
-            position: fixed;
-            bottom: 32px;
-            left: 50%;
-            transform: translateX(-50%) translateY(80px);
-            background: var(--surface);
-            color: var(--text);
-            padding: 12px 24px;
-            border-radius: 12px;
-            font-size: 13px;
-            font-weight: 500;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-            border: 1px solid var(--border);
-            opacity: 0;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            z-index: 1000;
-            pointer-events: none;
-        }
-        .toast.show {
-            opacity: 1;
-            transform: translateX(-50%) translateY(0);
-        }
-        
-        /* Footer */
-        .footer {
-            text-align: center;
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-top: 8px;
-            opacity: 0.6;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <h1>CCTV Dashboard</h1>
-            <div style="display:flex; gap:12px; align-items:center;">
-                <div style="display:flex; align-items:center; gap:4px; font-size:13px; font-weight:600; color:var(--text-secondary);" title="Battery">
-                    <svg viewBox="0 0 24 24" style="width:16px; height:16px; fill:currentColor;"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4z"/></svg>
-                    <span id="batteryText">—%</span>
-                </div>
-                <div style="display:flex; align-items:center; gap:4px; font-size:13px; font-weight:600; color:var(--text-secondary);" title="WiFi Signal">
-                    <svg viewBox="0 0 24 24" style="width:16px; height:16px; fill:currentColor;"><path d="M12.01 21.49L23.64 7c-.45-.34-4.93-4-11.64-4C5.28 3 .81 6.66.36 7l11.63 14.49.01.01.01-.01z"/></svg>
-                    <span id="wifiText">—%</span>
-                </div>
-                <div class="status-badge offline" id="statusBadge">
-                    <span class="status-dot"></span>
-                    <span id="statusText">OFFLINE</span>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Preview -->
-        <div class="preview-card">
-            <div class="preview-wrapper">
-                <img id="cam-preview" src="/shot.jpg" alt="Live Preview" />
-                <div class="preview-overlay">
-                    <span class="chip" id="chipCodec">—</span>
-                    <span class="chip" id="chipRes">—</span>
-                </div>
-            </div>
-            <div class="controls">
-                <button class="btn primary" id="btnStream" onclick="toggleStream()">
-                    <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                    <span id="btnStreamText">Start</span>
-                </button>
-                <button class="btn" onclick="switchCamera()">
-                    <svg viewBox="0 0 24 24"><path d="M20 4h-3.17L15 2H9L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
-                    Flip Camera
-                </button>
-            </div>
-        </div>
-        
-        <!-- Video Settings -->
-        <div class="settings-card">
-            <h3>Video Settings</h3>
-            <div class="setting-row">
-                <span class="setting-label">Codec</span>
-                <div class="select-wrap">
-                    <select id="codecSelect" onchange="changeCodec(this.value)">
-                        <option value="H264">H.264</option>
-                        <option value="H265">H.265</option>
-                        <option value="AV1">AV1</option>
-                    </select>
-                </div>
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Resolution</span>
-                <div class="select-wrap">
-                    <select id="resSelect" onchange="changeResolution(this.value)">
-                        <option value="640x480">480p</option>
-                        <option value="1280x720">720p</option>
-                        <option value="1920x1080">1080p</option>
-                        <option value="0x0">Max</option>
-                    </select>
-                </div>
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Rotation</span>
-                <div class="select-wrap">
-                    <select id="rotationSelect" onchange="setSetting('camera_rotation', this.value)">
-                        <option value="0">0°</option>
-                        <option value="90">90°</option>
-                        <option value="180">180°</option>
-                        <option value="270">270°</option>
-                    </select>
-                </div>
-            </div>
-            <div class="setting-row">
-                <div>
-                    <span class="setting-label">Encoder</span>
-                    <div class="setting-sublabel" id="encoderSublabel">Auto</div>
-                </div>
-                <div class="select-wrap">
-                    <select id="encoderSelect" onchange="setSetting('encoder_implementation', this.value)">
-                        <option value="auto">Auto</option>
-                        <option value="hardware">Hardware</option>
-                        <option value="software">Software</option>
-                        <option value="cbr">Constant bitrate</option>
-                    </select>
-                </div>
-            </div>
-            <div class="setting-row">
-                <div>
-                    <span class="setting-label">This device encodes</span>
-                    <div class="setting-sublabel" id="codecSupportText">Checking…</div>
-                </div>
-            </div>
-            <div class="setting-row">
-                <div>
-                    <span class="setting-label">Adapt to heat and battery</span>
-                    <div class="setting-sublabel" id="adaptiveSublabel">Step the bitrate down when the device overheats or the battery runs low</div>
-                </div>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleAdaptive" onchange="setSetting('adaptive_quality_enabled', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Show Preview</span>
-                <label class="toggle">
-                    <input type="checkbox" id="togglePreview" onchange="setSetting('show_preview', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-        </div>
+    private fun jsonResponse(json: String): Response {
+        val response = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+        response.addHeader("Cache-Control", "no-store")
+        return response
+    }
 
-        <!-- Encoder tuning. Collapsed by default for the same reason the app hides its
-             Advanced section: these change how the encoder is prepared and a bad value
-             can leave a device unable to start a stream at all. -->
-        <div class="settings-card">
-            <details>
-                <summary class="advanced-summary">Encoder Tuning (Advanced)</summary>
-                <div class="setting-row">
-                    <div>
-                        <span class="setting-label">Bitrate</span>
-                        <div class="setting-sublabel" id="bitrateSublabel">Auto</div>
-                    </div>
-                    <div class="select-wrap">
-                        <select id="bitrateSelect" onchange="setSetting('bitrate_kbps', this.value)">
-                            <option value="0">Auto</option>
-                            <option value="1000">1 Mbit/s</option>
-                            <option value="2000">2 Mbit/s</option>
-                            <option value="4000">4 Mbit/s</option>
-                            <option value="6000">6 Mbit/s</option>
-                            <option value="8000">8 Mbit/s</option>
-                            <option value="12000">12 Mbit/s</option>
-                            <option value="20000">20 Mbit/s</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="setting-row">
-                    <div>
-                        <span class="setting-label">Frame rate</span>
-                        <div class="setting-sublabel">Lower frame rates cut bitrate, heat and battery drain</div>
-                    </div>
-                    <div class="select-wrap">
-                        <select id="fpsSelect" onchange="setSetting('video_fps', this.value)">
-                            <option value="10">10 fps</option>
-                            <option value="15">15 fps</option>
-                            <option value="20">20 fps</option>
-                            <option value="24">24 fps</option>
-                            <option value="30">30 fps</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="setting-row">
-                    <div>
-                        <span class="setting-label">Keyframe interval</span>
-                        <div class="setting-sublabel">Shorter means players start faster and recover from loss sooner, at a bandwidth cost</div>
-                    </div>
-                    <div class="select-wrap">
-                        <select id="keyframeSelect" onchange="setSetting('keyframe_interval_seconds', this.value)">
-                            <option value="1">1 s</option>
-                            <option value="2">2 s</option>
-                            <option value="3">3 s</option>
-                            <option value="5">5 s</option>
-                            <option value="10">10 s</option>
-                        </select>
-                    </div>
-                </div>
-            </details>
-        </div>
+    /** An int extra from the sticky battery broadcast, or -1; reading it needs no receiver. */
+    private fun batteryExtra(name: String): Int {
+        val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        return intent?.getIntExtra(name, -1) ?: -1
+    }
 
-        <!-- The capture pipeline: the service's own comment calls this "the single
-             biggest battery cost in the app". Collapsed for the same reason as the
-             encoder card. -->
-        <div class="settings-card">
-            <details>
-                <summary class="advanced-summary">Capture &amp; Detection (Advanced)</summary>
-                <div class="setting-row">
-                    <div>
-                        <span class="setting-label">Capture interval</span>
-                        <div class="setting-sublabel">How often a frame is grabbed while detection is on or someone is watching</div>
-                    </div>
-                    <div class="select-wrap">
-                        <select id="activeIntervalSelect" onchange="setSetting('active_snapshot_interval_ms', this.value)">
-                            <option value="250">4 per second</option>
-                            <option value="500">2 per second</option>
-                            <option value="1000">1 per second</option>
-                            <option value="2000">Every 2 s</option>
-                            <option value="5000">Every 5 s</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="setting-row">
-                    <div>
-                        <span class="setting-label">Idle heartbeat</span>
-                        <div class="setting-sublabel">How often a frame is grabbed when nothing wants one</div>
-                    </div>
-                    <div class="select-wrap">
-                        <select id="idleIntervalSelect" onchange="setSetting('idle_snapshot_interval_ms', this.value)">
-                            <option value="1000">Every 1 s</option>
-                            <option value="3000">Every 3 s</option>
-                            <option value="10000">Every 10 s</option>
-                            <option value="30000">Every 30 s</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="setting-row">
-                    <div>
-                        <span class="setting-label">Analysis width</span>
-                        <div class="setting-sublabel">Frames are shrunk to this before detection. Smaller is cheaper; below 320 the detector starts missing distant subjects</div>
-                    </div>
-                    <div class="select-wrap">
-                        <select id="analysisWidthSelect" onchange="setSetting('analysis_width', this.value)">
-                            <option value="320">320 px</option>
-                            <option value="480">480 px</option>
-                            <option value="640">640 px</option>
-                            <option value="1280">1280 px</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="setting-row">
-                    <div>
-                        <span class="setting-label">Snapshot quality</span>
-                        <div class="setting-sublabel">JPEG quality for the preview, stored events and the detector input</div>
-                    </div>
-                    <div class="select-wrap">
-                        <select id="jpegQualitySelect" onchange="setSetting('snapshot_jpeg_quality', this.value)">
-                            <option value="30">30 (smallest)</option>
-                            <option value="50">50</option>
-                            <option value="70">70</option>
-                            <option value="90">90 (best)</option>
-                        </select>
-                    </div>
-                </div>
-            </details>
-        </div>
-
-        <!-- Overlay Settings -->
-        <div class="settings-card">
-            <h3>Overlay</h3>
-            <div class="setting-row">
-                <span class="setting-label">Show Timestamp</span>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleTimestamp" onchange="setSetting('show_timestamp', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Show Date</span>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleDate" onchange="setSetting('show_date', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Position</span>
-                <div class="select-wrap">
-                    <select id="posSelect" onchange="setSetting('timestamp_position', this.value)">
-                        <option value="Top Left">Top Left</option>
-                        <option value="Top Right">Top Right</option>
-                        <option value="Bottom Left">Bottom Left</option>
-                        <option value="Bottom Right">Bottom Right</option>
-                    </select>
-                </div>
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Text Size</span>
-                <div class="select-wrap">
-                    <select id="sizeSelect" onchange="setSetting('timestamp_size', this.value)">
-                        <option value="Small">Small</option>
-                        <option value="Medium">Medium</option>
-                        <option value="Large">Large</option>
-                    </select>
-                </div>
-            </div>
-        </div>
-
-        <!-- Camera Controls -->
-        <div class="settings-card">
-            <h3>Camera Controls</h3>
-            <div class="setting-row">
-                <span class="setting-label">Flashlight</span>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleFlashlight" onchange="setSetting('flashlight_enabled', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-            <div class="setting-row">
-                <div>
-                    <span class="setting-label">Night Mode</span>
-                    <div class="setting-sublabel">Auto flash when dark</div>
-                </div>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleNightMode" onchange="setSetting('night_mode_enabled', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-        </div>
-
-        <!-- Detection -->
-        <div class="settings-card">
-            <h3>Detection (Object + Motion)</h3>
-            <div class="setting-row">
-                <div>
-                    <span class="setting-label">Enable Detection</span>
-                    <div class="setting-sublabel">Master switch for event detection</div>
-                </div>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleDetectionEnabled" onchange="setSetting('detection_enabled', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Motion Detection</span>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleMotionDetection" onchange="setSetting('motion_detection_enabled', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-            <div class="setting-row">
-                <div>
-                    <span class="setting-label">People/Animal Detection</span>
-                    <div class="setting-sublabel">Uses a TensorFlow Lite model from assets/detect.tflite</div>
-                </div>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleObjectDetection" onchange="setSetting('object_detection_enabled', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-            <div class="setting-row">
-                <div>
-                    <span class="setting-label">Model Status</span>
-                    <div class="setting-sublabel" id="detectorStatusText">Waiting…</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Authentication -->
-        <div class="settings-card">
-            <h3>Authentication</h3>
-            <div class="setting-row">
-                <span class="setting-label">Enable Auth</span>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleAuth" onchange="updateAuth()">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Username</span>
-                <input type="text" class="text-input" id="authUsername" placeholder="username" onchange="updateAuth()">
-            </div>
-            <div class="setting-row">
-                <span class="setting-label">Password</span>
-                <input type="password" class="text-input" id="authPassword" placeholder="password" onchange="updateAuth()">
-            </div>
-            <div class="setting-row">
-                <div>
-                    <span class="setting-label">Secure This Dashboard</span>
-                    <div class="setting-sublabel">Require the username &amp; password above for port 8080 too</div>
-                </div>
-                <label class="toggle">
-                    <input type="checkbox" id="toggleWebAuth" onchange="setSetting('web_auth_enabled', this.checked)">
-                    <span class="toggle-track"></span>
-                </label>
-            </div>
-        </div>
-        
-        <!-- Connection Info -->
-        <div class="info-card">
-            <h3>Connection</h3>
-            <div class="url-row">
-                <div>
-                    <div class="url-label">RTSP Stream<span id="authBadge" style="display:$authBadgeDisplay;margin-left:8px;padding:2px 8px;border-radius:8px;background:var(--accent-glow);color:var(--accent);font-size:10px;font-weight:600">AUTH</span></div>
-                    <div class="url-value" id="rtspUrl">$rtspUrl</div>
-                </div>
-                <button class="copy-btn" onclick="copyUrl('rtspUrl')" title="Copy">
-                    <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                </button>
-            </div>
-            <div class="url-row">
-                <div>
-                    <div class="url-label">Web Dashboard</div>
-                    <div class="url-value">http://$safeIp:8080</div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="footer">CCTV Server • $safeIp</div>
-    </div>
-    
-    <div class="toast" id="toast"></div>
-    
-    <script>
-        // --- Preview auto-refresh ---
-        const img = document.getElementById('cam-preview');
-        setInterval(() => {
-            const newImg = new Image();
-            newImg.onload = () => { img.src = newImg.src; };
-            newImg.src = '/shot.jpg?t=' + Date.now();
-        }, 500);
-        
-        // --- Status polling ---
-        let initialLoad = true;
-        function fetchStatus() {
-            fetch('/status')
-                .then(r => r.json())
-                .then(data => {
-                    const badge = document.getElementById('statusBadge');
-                    const statusText = document.getElementById('statusText');
-                    const btnStream = document.getElementById('btnStream');
-                    const btnStreamText = document.getElementById('btnStreamText');
-                    const chipCodec = document.getElementById('chipCodec');
-                    const chipRes = document.getElementById('chipRes');
-                    const batteryText = document.getElementById('batteryText');
-                    const wifiText = document.getElementById('wifiText');
-
-                    if (data.batteryLevel >= 0) batteryText.textContent = data.batteryLevel + '%';
-                    if (data.wifiStrength >= 0) wifiText.textContent = data.wifiStrength + '%';
-                    
-                    if (data.streaming) {
-                        badge.className = 'status-badge live';
-                        statusText.textContent = 'LIVE';
-                        btnStream.className = 'btn danger';
-                        btnStreamText.textContent = 'Stop';
-                    } else {
-                        badge.className = 'status-badge offline';
-                        statusText.textContent = 'OFFLINE';
-                        btnStream.className = 'btn primary';
-                        btnStreamText.textContent = 'Start';
-                    }
-                    
-                    chipCodec.textContent = data.codec;
-                    chipRes.textContent = data.resolution;
-                    
-                    // Sync dropdowns
-                    document.getElementById('codecSelect').value = data.codec;
-                    document.getElementById('resSelect').value = data.resolution;
-                    document.getElementById('rotationSelect').value = data.cameraRotation;
-                    
-                    // Sync toggles
-                    document.getElementById('encoderSelect').value = data.encoderImplementation;
-                    // Say so when the device had no encoder of the requested kind and
-                    // the service quietly used Auto instead -- otherwise the setting
-                    // looks like it simply did not apply.
-                    document.getElementById('encoderSublabel').textContent =
-                        data.activeEncoderImplementation &&
-                        data.activeEncoderImplementation !== data.encoderImplementation
-                            ? 'Not available for this codec — using ' + data.activeEncoderImplementation
-                            : 'Which MediaCodec implementation to encode with';
-                    document.getElementById('codecSupportText').textContent =
-                        describeCodecSupport(data.codecSupport);
-                    document.getElementById('toggleAdaptive').checked = data.adaptiveQualityEnabled;
-                    document.getElementById('activeIntervalSelect').value = data.activeSnapshotIntervalMs;
-                    document.getElementById('idleIntervalSelect').value = data.idleSnapshotIntervalMs;
-                    document.getElementById('analysisWidthSelect').value = data.analysisWidth;
-                    document.getElementById('jpegQualitySelect').value = data.snapshotJpegQuality;
-                    // When the policy is actually holding the stream back, say so here
-                    // rather than leaving the user to wonder why the bitrate they picked
-                    // is not the bitrate they are getting.
-                    document.getElementById('adaptiveSublabel').textContent =
-                        data.qualityScalePercent < 100
-                            ? 'Active: ' + data.qualityTrigger.toLowerCase() +
-                              ' — running at ' + data.qualityScalePercent + '% of the configured bitrate'
-                            : 'Step the bitrate down when the device overheats or the battery runs low';
-                    document.getElementById('bitrateSelect').value = data.bitrateKbps;
-                    document.getElementById('fpsSelect').value = data.videoFps;
-                    document.getElementById('keyframeSelect').value = data.keyframeIntervalSeconds;
-                    // On Auto the picked number is the only interesting part, so show
-                    // what the encoder actually got rather than the word "Auto" twice.
-                    document.getElementById('bitrateSublabel').textContent =
-                        data.bitrateKbps === 0
-                            ? 'Auto — currently ' + (data.activeBitrateKbps || '?') + ' kbit/s'
-                            : 'Pinned to ' + data.bitrateKbps + ' kbit/s';
-                    document.getElementById('togglePreview').checked = data.showPreview;
-                    document.getElementById('toggleTimestamp').checked = data.showTimestamp;
-                    document.getElementById('toggleDate').checked = data.showDate;
-                    document.getElementById('posSelect').value = data.timestampPosition;
-                    document.getElementById('sizeSelect').value = data.timestampSize;
-                    document.getElementById('toggleFlashlight').checked = data.flashlightEnabled;
-                    document.getElementById('toggleNightMode').checked = data.nightModeEnabled;
-                    document.getElementById('toggleDetectionEnabled').checked = data.detectionEnabled;
-                    document.getElementById('toggleMotionDetection').checked = data.motionDetectionEnabled;
-                    document.getElementById('toggleObjectDetection').checked = data.objectDetectionEnabled;
-                    const detectorStatusText = document.getElementById('detectorStatusText');
-                    detectorStatusText.textContent = data.objectDetectorReady
-                        ? 'Detection model loaded'
-                        : 'Model missing: add app/src/main/assets/detect.tflite';
-                    
-                    // Sync auth
-                    document.getElementById('toggleAuth').checked = data.authEnabled;
-                    document.getElementById('toggleWebAuth').checked = data.webAuthEnabled;
-                    if (initialLoad) {
-                        document.getElementById('authUsername').value = data.username || '';
-                        initialLoad = false;
-                    }
-                    
-                    // Update RTSP URL dynamically
-                    if (data.rtspUrl) {
-                        document.getElementById('rtspUrl').textContent = data.rtspUrl;
-                    }
-                    var authBadge = document.getElementById('authBadge');
-                    if (authBadge) {
-                        authBadge.style.display = data.authEnabled ? 'inline' : 'none';
-                    }
-                })
-                .catch(function() {});
-        }
-        fetchStatus();
-        setInterval(fetchStatus, 3000);
-        
-        // --- Actions ---
-        // State changes go out as POST; the server also accepts GET for
-        // backwards compatibility with existing scripts and NVR integrations.
-        const POST = { method: 'POST' };
-        function toggleStream() {
-            fetch('/action/toggle-stream', POST)
-                .then(r => r.text())
-                .then(t => { showToast(t === 'Started' ? 'Stream started' : 'Stream stopped'); fetchStatus(); });
-        }
-        
-        function switchCamera() {
-            fetch('/action/switch-camera', POST)
-                .then(() => showToast('Camera switched'));
-        }
-        
-        function changeCodec(v) {
-            fetch('/action/set-codec?codec=' + encodeURIComponent(v), POST)
-                .then(() => { showToast('Codec: ' + v); fetchStatus(); });
-        }
-        
-        function changeResolution(v) {
-            const [w, h] = v.split('x');
-            fetch('/action/set-resolution?w=' + w + '&h=' + h, POST)
-                .then(() => { showToast(v === '0x0' ? 'Resolution: Max' : 'Resolution: ' + v); fetchStatus(); });
-        }
-        
-        // Renders the probe as "H.264 hardware, H.265 software, AV1 none" so a user
-        // choosing a codec can see why one of them will not stick on this handset.
-        function describeCodecSupport(support) {
-            if (!support) return 'Unknown';
-            const names = { H264: 'H.264', H265: 'H.265', AV1: 'AV1' };
-            return Object.keys(support).map(function (codec) {
-                const s = support[codec];
-                let how = 'none';
-                if (s.hardware && s.software) how = 'hardware + software';
-                else if (s.hardware) how = 'hardware';
-                else if (s.software) how = 'software';
-                return (names[codec] || codec) + ' ' + how;
-            }).join(', ');
-        }
-
-        function setSetting(key, value) {
-            fetch('/action/set-setting?key=' + encodeURIComponent(key) + '&value=' + encodeURIComponent(value), POST)
-                .then(() => { showToast(key.replace(/_/g, ' ') + ': ' + value); fetchStatus(); });
-        }
-
-        function updateAuth() {
-            const enabled = document.getElementById('toggleAuth').checked;
-            const username = document.getElementById('authUsername').value;
-            const password = document.getElementById('authPassword').value;
-            fetch('/action/set-auth?enabled=' + enabled + '&username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password), POST)
-                .then(() => { showToast('Auth ' + (enabled ? 'enabled' : 'disabled')); fetchStatus(); });
-        }
-        
-        function copyUrl(id) {
-            copyText(document.getElementById(id).textContent).then(
-                ok => showToast(ok ? 'Copied to clipboard' : 'Copy failed')
-            );
-        }
-
-        function copyText(text) {
-            if (navigator.clipboard && window.isSecureContext) {
-                return navigator.clipboard.writeText(text).then(() => true, () => fallbackCopy(text));
-            }
-            return Promise.resolve(fallbackCopy(text));
-        }
-
-        function fallbackCopy(text) {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            let ok = false;
-            try {
-                ok = document.execCommand('copy');
-            } catch (e) {
-                ok = false;
-            }
-            document.body.removeChild(ta);
-            return ok;
-        }
-        
-        // --- Toast ---
-        let toastTimer;
-        function showToast(msg) {
-            const toast = document.getElementById('toast');
-            toast.textContent = msg;
-            toast.classList.add('show');
-            clearTimeout(toastTimer);
-            toastTimer = setTimeout(() => toast.classList.remove('show'), 2500);
-        }
-    </script>
-</body>
-</html>
-        """
+    private fun buildHealthJson(): String {
+        val frames = SnapshotFrames(SnapshotBuffer.directoryFor(context))
+        val stats = frames.stats()
+        val dir = SnapshotBuffer.directoryFor(context)
+        val coverage = SnapshotFrames.coveragePercent(
+            stats.oldestMs, stats.newestMs, SnapshotBuffer.DEFAULT_RETENTION_MS
+        )
+        val plugged = batteryExtra(BatteryManager.EXTRA_PLUGGED) > 0
+        return "{" +
+            "\"now\":" + System.currentTimeMillis() + "," +
+            "\"uptimeMs\":" + (System.currentTimeMillis() - startedAtMs) + "," +
+            "\"buffer\":{" +
+                "\"count\":" + stats.count + "," +
+                "\"totalBytes\":" + stats.totalBytes + "," +
+                "\"oldest\":" + stats.oldestMs + "," +
+                "\"newest\":" + stats.newestMs + "," +
+                "\"retentionMs\":" + SnapshotBuffer.DEFAULT_RETENTION_MS + "," +
+                "\"maxFiles\":" + SnapshotBuffer.DEFAULT_MAX_FILES + "," +
+                "\"coveragePercent\":" + coverage + "," +
+                "\"freeBytes\":" + dir.usableSpace + "," +
+                "\"minFreeBytes\":" + SnapshotBuffer.DEFAULT_MIN_FREE_BYTES +
+            "}," +
+            "\"ports\":{" +
+                "\"dashboard\":" + PORT + "," +
+                "\"rtsp\":8554," +
+                "\"rtspActive\":" + isStreaming() +
+            "}," +
+            "\"device\":{" +
+                "\"batteryLevel\":" + getBatteryLevel() + "," +
+                "\"batteryTempTenthsC\":" + batteryExtra(BatteryManager.EXTRA_TEMPERATURE) + "," +
+                "\"charging\":" + plugged + "," +
+                "\"wifiStrength\":" + getWifiStrength() + "," +
+                "\"thermalStatus\":" + getThermalStatus() +
+            "}" +
+            "}"
     }
 }

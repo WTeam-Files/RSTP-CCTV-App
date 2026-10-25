@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0b0d10">
+<title>CCTV Dashboard</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="shell">
+  <!-- Navigation: left rail on desktop, bottom bar on phones -->
+  <nav class="nav" aria-label="Sections">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="12" cy="12" r="2.8" fill="var(--ok)"/></svg>
+      <span class="brand-name">CCTV</span>
+    </div>
+    <ul class="nav-list">
+      <li><a class="nav-link" href="#live" data-route="live">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 8v8H5V8h10m1-2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4V7a1 1 0 0 0-1-1z"/></svg><span>Live</span></a></li>
+      <li><a class="nav-link" href="#frames" data-route="frames">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4V5zm2 2v10h12V7H6zm1 8l3-4 2 2.5L14.5 10 17 15H7z"/></svg><span>Frames</span></a></li>
+      <li><a class="nav-link" href="#events" data-route="events">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6v-5c0-3.1-1.6-5.6-4.5-6.3V4a1.5 1.5 0 0 0-3 0v.7C7.6 5.4 6 7.9 6 11v5l-2 2v1h16v-1l-2-2z"/></svg><span>Events</span></a></li>
+      <li><a class="nav-link" href="#health" data-route="health">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h4l2-6 4 12 2-6h6v-2h-4.6l-.9 2.7L12.9 4 9.1 11H3v2z"/></svg><span>Health</span></a></li>
+      <li><a class="nav-link" href="#settings" data-route="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5L19.4 13zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg><span>Settings</span></a></li>
+    </ul>
+    <div class="nav-foot">
+      <button class="btn btn-ghost btn-sm" id="themeBtn" type="button" aria-label="Switch to light theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2v-2H2v2zm18 0h2v-2h-2v2zM11 2v2h2V2h-2zm0 18v2h2v-2h-2zM5.6 4.2L4.2 5.6l1.4 1.4 1.4-1.4-1.4-1.4zm12.8 12.8l-1.4 1.4 1.4 1.4 1.4-1.4-1.4-1.4zM4.2 18.4l1.4 1.4L7 18.4 5.6 17l-1.4 1.4zM17 5.6L18.4 7l1.4-1.4-1.4-1.4L17 5.6z"/></svg>
+        <span id="themeLabel">Light</span>
+      </button>
+    </div>
+  </nav>
+
+  <div class="content">
+    <header class="topbar">
+      <h1 class="page-title" id="pageTitle">Live</h1>
+      <div class="topbar-right">
+        <span class="pill" id="connPill" data-state="offline" role="status" aria-live="polite">
+          <span class="dot" aria-hidden="true"></span><span id="connText">Connecting</span>
+        </span>
+        <span class="meter" title="Battery" id="batteryMeter" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h-1.5V2h-5v2H8a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1z"/></svg>
+          <span id="batteryText">--</span>
+        </span>
+      </div>
+    </header>
+
+    <main id="main" class="main" tabindex="-1">
+
+      <!-- ============ LIVE ============ -->
+      <section class="view" id="view-live" data-view="live" hidden>
+        <div class="stage-card">
+          <div class="stage" id="stage">
+            <img id="liveImg" alt="Live camera view" decoding="async">
+            <div class="stage-empty" id="stageEmpty">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 6.5l-4 4V7a1 1 0 0 0-1-1H9.8l11.2 11.2V6.5zM3.3 2.8L2 4.1 4.9 7H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12c.2 0 .4 0 .5-.1L19.9 22l1.3-1.3L3.3 2.8z"/></svg>
+              <p id="stageEmptyText">Waiting for the first frame…</p>
+            </div>
+            <div class="stage-hud">
+              <span class="pill pill-glass" id="livePill" data-state="offline"><span class="dot" aria-hidden="true"></span><span id="livePillText">Offline</span></span>
+              <span class="hud-stats" id="hudStats" aria-live="off">
+                <span id="hudFps">-- fps</span>
+                <span id="hudLat">-- ms</span>
+                <span id="hudRes">--</span>
+              </span>
+            </div>
+            <div class="stage-time" id="stageTime" hidden></div>
+          </div>
+          <div class="toolbar" role="toolbar" aria-label="Live view controls">
+            <button class="btn" id="pauseBtn" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true" id="pauseIcon"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg><span id="pauseText">Pause</span>
+            </button>
+            <button class="btn" id="fsBtn" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h5v2H7v3H5V5zm9 0h5v5h-2V7h-3V5zM5 14h2v3h3v2H5v-5zm12 0h2v5h-5v-2h3v-3z"/></svg><span>Fullscreen</span>
+            </button>
+            <button class="btn" id="saveBtn" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg><span>Save frame</span>
+            </button>
+            <button class="btn" id="flipBtn" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4h-3.2L15 2H9L7.2 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm-5 11.5V13H9v2.5L5.5 12 9 8.5V11h6V8.5l3.5 3.5-3.5 3.5z"/></svg><span>Flip camera</span>
+            </button>
+            <label class="inline-field">
+              <span>Refresh</span>
+              <select id="rateSel" aria-label="Live refresh rate">
+                <option value="250">Smooth (~4 fps)</option>
+                <option value="1000">Balanced (1 fps)</option>
+                <option value="3000">Eco (every 3 s)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head"><h2>Stream</h2><span class="pill" id="rtspPill" data-state="offline"><span class="dot"></span><span id="rtspPillText">Stopped</span></span></div>
+            <p class="muted small">Start or stop the RTSP video stream for NVR apps and VLC. The preview above works either way.</p>
+            <div class="row-actions">
+              <button class="btn btn-primary" id="streamBtn" type="button"><span id="streamBtnText">Start stream</span></button>
+            </div>
+            <div class="kv" id="liveKv"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Quick controls</h2></div>
+            <div class="rows" id="quickRows"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Latest events</h2><a class="link" href="#events">View all</a></div>
+          <div class="strip" id="eventStrip"><p class="muted small">No events yet.</p></div>
+        </div>
+      </section>
+
+      <!-- ============ FRAMES ============ -->
+      <section class="view" id="view-frames" data-view="frames" hidden>
+        <div class="card player">
+          <div class="card-head">
+            <h2>Timeline</h2>
+            <span class="muted small" id="tlRange">--</span>
+          </div>
+          <div class="player-stage" id="playerStage">
+            <img id="tlImg" alt="Selected frame from the timeline" decoding="async">
+            <div class="stage-empty" id="tlEmpty"><p>No frames buffered yet.</p></div>
+            <div class="stage-time" id="tlTime">--</div>
+          </div>
+          <div class="scrub">
+            <canvas id="density" height="24" aria-hidden="true"></canvas>
+            <input type="range" id="scrubber" min="0" max="0" value="0" step="1" aria-label="Scrub through buffered frames" disabled>
+            <div class="scrub-labels"><span id="tlOldest">--</span><span id="tlNewest">--</span></div>
+          </div>
+          <div class="toolbar">
+            <button class="btn" id="tlPrev" type="button" aria-label="Previous frame"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 7.4L14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg></button>
+            <button class="btn btn-primary" id="tlPlay" type="button"><svg viewBox="0 0 24 24" aria-hidden="true" id="tlPlayIcon"><path d="M8 5v14l11-7z"/></svg><span id="tlPlayText">Play</span></button>
+            <button class="btn" id="tlNext" type="button" aria-label="Next frame"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.6 16.6L10 18l6-6-6-6-1.4 1.4L13.2 12z"/></svg></button>
+            <button class="btn" id="tlLive" type="button">Jump to newest</button>
+            <label class="inline-field"><span>Speed</span>
+              <select id="tlSpeed" aria-label="Playback speed">
+                <option value="500">2 fps</option>
+                <option value="200" selected>5 fps</option>
+                <option value="100">10 fps</option>
+                <option value="40">25 fps</option>
+              </select>
+            </label>
+            <a class="btn" id="tlDownload" href="#frames" download>Download</a>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>Recent frames</h2>
+            <label class="inline-field"><span>Show</span>
+              <select id="gridLimit" aria-label="Number of frames to show">
+                <option value="60">Last 60</option>
+                <option value="120">Last 120</option>
+                <option value="300">Last 300</option>
+                <option value="1000">Last 1000</option>
+              </select>
+            </label>
+          </div>
+          <p class="muted small" id="gridNote"></p>
+          <div class="gallery" id="gallery"></div>
+          <div class="row-actions"><button class="btn" id="moreBtn" type="button" hidden>Show more</button></div>
+        </div>
+      </section>
+
+      <!-- ============ EVENTS ============ -->
+      <section class="view" id="view-events" data-view="events" hidden>
+        <div class="card">
+          <div class="card-head">
+            <h2>Detections</h2>
+            <button class="btn btn-sm" id="testEventBtn" type="button">Create test event</button>
+          </div>
+          <p class="muted small">Motion and object detections with their own snapshot (and clip when recorded). Kept for 72 hours.</p>
+          <div class="event-list" id="eventList"></div>
+        </div>
+      </section>
+
+      <!-- ============ HEALTH ============ -->
+      <section class="view" id="view-health" data-view="health" hidden>
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-head"><h2>Phone buffer</h2><span class="pill" id="bufPill" data-state="offline"><span class="dot"></span><span id="bufPillText">--</span></span></div>
+            <div class="big-stat"><span id="bufCount">--</span><small>frames</small></div>
+            <div class="bar" role="img" id="covBar" aria-label="Buffer coverage"><span id="covFill"></span></div>
+            <p class="muted small" id="covText">--</p>
+            <dl class="kv2">
+              <dt>Size on phone</dt><dd id="bufSize">--</dd>
+              <dt>Oldest frame</dt><dd id="bufOldest">--</dd>
+              <dt>Newest frame</dt><dd id="bufNewest">--</dd>
+              <dt>Retention window</dt><dd id="bufRetention">--</dd>
+              <dt>Frame cap</dt><dd id="bufCap">--</dd>
+              <dt>Free disk</dt><dd id="bufFree">--</dd>
+            </dl>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Services</h2></div>
+            <dl class="kv2">
+              <dt>Dashboard</dt><dd><span class="pill pill-sm" data-state="live"><span class="dot"></span>Up</span> <span class="muted small" id="portDash">port 8080</span></dd>
+              <dt>RTSP stream</dt><dd><span class="pill pill-sm" id="rtspPill2" data-state="offline"><span class="dot"></span><span id="rtspText2">--</span></span> <span class="muted small" id="portRtsp">port 8554</span></dd>
+              <dt>Uptime</dt><dd id="uptime">--</dd>
+              <dt>Video</dt><dd id="hVideo">--</dd>
+              <dt>Detection</dt><dd id="hDetect">--</dd>
+              <dt>Access control</dt><dd id="hAuth">--</dd>
+            </dl>
+            <div class="card-head sub"><h2>Device</h2></div>
+            <dl class="kv2">
+              <dt>Battery</dt><dd id="hBattery">--</dd>
+              <dt>Temperature</dt><dd id="hTemp">--</dd>
+              <dt>Thermal state</dt><dd id="hThermal">--</dd>
+              <dt>Wi-Fi signal</dt><dd id="hWifi">--</dd>
+            </dl>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>What is archived where</h2></div>
+          <ol class="tiers">
+            <li>
+              <span class="tier-badge">Phone</span>
+              <div><strong>Last 3 hours of snapshots.</strong>
+              <p class="muted small">A still image is stored every few seconds, then deleted automatically once it is older than 3 hours (or when the frame cap or free-space floor is hit). This is a short safety buffer, not an archive.</p></div>
+            </li>
+            <li>
+              <span class="tier-badge">Phone</span>
+              <div><strong>Detection events for 72 hours.</strong>
+              <p class="muted small">Motion and object detections keep their own snapshot and optional clip, separate from the 3 hour buffer.</p></div>
+            </li>
+            <li>
+              <span class="tier-badge tier-home">Home server</span>
+              <div><strong>Long-term history.</strong>
+              <p class="muted small">Your home server pulls footage from this phone on its own schedule and keeps it. This page cannot see that server, so it cannot confirm the last pull. If the phone's buffer looks healthy but you want proof, check the server.</p></div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- ============ SETTINGS ============ -->
+      <section class="view" id="view-settings" data-view="settings" hidden>
+        <div class="card">
+          <div class="card-head">
+            <h2>Essentials</h2>
+            <button class="btn btn-sm" id="resetBtn" type="button">Reset to recommended</button>
+          </div>
+          <p class="muted small">Changes apply immediately. Recommended: 720p, 30 fps, snapshot every 5 s.</p>
+          <div class="rows" id="essentialRows"></div>
+        </div>
+
+        <details class="card fold">
+          <summary>Video &amp; encoder</summary>
+          <div class="rows" id="videoRows"></div>
+        </details>
+
+        <details class="card fold">
+          <summary>Capture &amp; detection</summary>
+          <div class="rows" id="captureRows"></div>
+        </details>
+
+        <details class="card fold">
+          <summary>Timestamp overlay</summary>
+          <div class="rows" id="overlayRows"></div>
+        </details>
+
+        <div class="card">
+          <div class="card-head"><h2>Access</h2></div>
+          <div class="rows" id="webAuthRows"></div>
+          <form class="form" id="authForm" autocomplete="off">
+            <label class="field"><span>Username</span><input type="text" id="authUser" autocomplete="off" spellcheck="false"></label>
+            <label class="field"><span>New password</span><input type="password" id="authPass" autocomplete="new-password"></label>
+            <label class="check"><input type="checkbox" id="authEnabled"> <span>Require a username and password for the RTSP stream</span></label>
+            <p class="muted small">Saving replaces the stored password, so it must be filled in every time.</p>
+            <div class="row-actions"><button class="btn btn-primary" type="submit">Save credentials</button></div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Connect</h2></div>
+          <div class="copyrow">
+            <div><div class="muted small">RTSP (VLC, NVR apps)</div><code id="rtspUrl" class="url">--</code></div>
+            <button class="btn btn-sm" id="revealBtn" type="button">Reveal</button>
+            <button class="btn btn-sm" id="copyRtsp" type="button">Copy</button>
+          </div>
+          <div class="copyrow">
+            <div><div class="muted small">Dashboard</div><code id="dashUrl" class="url">--</code></div>
+            <button class="btn btn-sm" id="copyDash" type="button">Copy</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Frame viewer" hidden>
+  <div class="lb-top">
+    <div class="lb-title" id="lbTitle">--</div>
+    <div class="lb-actions">
+      <a class="btn btn-sm" id="lbDownload" href="#" download>Download</a>
+      <button class="btn btn-sm" id="lbClose" type="button">Close</button>
+    </div>
+  </div>
+  <div class="lb-body">
+    <button class="lb-nav lb-prev" id="lbPrev" type="button" aria-label="Newer frame"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 7.4L14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg></button>
+    <img id="lbImg" alt="Selected frame">
+    <video id="lbVideo" controls playsinline hidden></video>
+    <button class="lb-nav lb-next" id="lbNext" type="button" aria-label="Older frame"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.6 16.6L10 18l6-6-6-6-1.4 1.4L13.2 12z"/></svg></button>
+  </div>
+  <div class="lb-cap" id="lbCap"></div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

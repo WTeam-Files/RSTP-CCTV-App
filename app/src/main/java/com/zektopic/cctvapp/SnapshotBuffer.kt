@@ -34,9 +34,14 @@ class SnapshotBuffer(
         /** Pruning scans the tree, so it runs at most this often. */
         private const val PRUNE_INTERVAL_MS = 60_000L
 
-        fun forContext(context: Context): SnapshotBuffer? {
+        /** Where the buffer lives; shared with the dashboard's read-only [SnapshotFrames]. */
+        fun directoryFor(context: Context): File {
             val base = context.getExternalFilesDir(null) ?: context.filesDir
-            return SnapshotBuffer(File(base, "snapshot-buffer"))
+            return File(base, "snapshot-buffer")
+        }
+
+        fun forContext(context: Context): SnapshotBuffer? {
+            return SnapshotBuffer(directoryFor(context))
         }
     }
 
